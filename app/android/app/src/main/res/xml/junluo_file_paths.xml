@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <external-path name="download" path="Download/" />
+  <external-path name="documents" path="Documents/" />
+  <external-path name="dcim" path="DCIM/" />
+  <external-path name="pictures" path="Pictures/" />
+  <external-path name="movies" path="Movies/" />
+  <external-path name="music" path="Music/" />
+  <external-path name="qq_files" path="Tencent/QQfile_recv/" />
+  <external-path name="qq_android_media" path="Android/media/com.tencent.mobileqq/Tencent/QQfile_recv/" />
+  <external-path name="wechat_files" path="Tencent/MicroMsg/Download/" />
+  <external-path name="wechat_android_media" path="Android/media/com.tencent.mm/MicroMsg/Download/" />
+</paths>

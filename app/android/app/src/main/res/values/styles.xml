@@ -1,0 +1,27 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+  <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <item name="android:enforceNavigationBarContrast" tools:targetApi="29">true</item>
+    <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+    <item name="colorPrimary">@color/colorPrimary</item>
+    <item name="android:statusBarColor">#DFEDD8</item>
+  </style>
+  <style name="Theme.App.SplashScreen" parent="AppTheme">
+    <item name="android:windowBackground">@drawable/ic_launcher_background</item>
+  </style>
+  <style name="JunLuoPhoneRestrictionTheme" parent="Theme.AppCompat.Light.NoActionBar">
+    <item name="android:windowBackground">#F6FAFC</item>
+    <item name="android:windowLightStatusBar">true</item>
+    <item name="android:statusBarColor">#F6FAFC</item>
+    <item name="android:navigationBarColor">#F6FAFC</item>
+    <item name="android:windowLightNavigationBar">true</item>
+    <item name="android:windowNoTitle">true</item>
+  </style>
+  <style name="JunLuoIncomingCallTheme" parent="AppTheme">
+    <item name="android:windowBackground">@drawable/junluo_incoming_background</item>
+    <item name="android:windowNoTitle">true</item>
+    <item name="android:statusBarColor">@android:color/transparent</item>
+    <item name="android:navigationBarColor">#F7F7F7</item>
+    <item name="android:windowLightStatusBar">true</item>
+    <item name="android:windowLightNavigationBar">true</item>
+  </style>
+</resources>

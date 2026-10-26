@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="junluo_camera_channel_name">白云的视线</string>
+  <string name="junluo_camera_channel_description">显示摄像头待命、临时使用状态与立即停止入口</string>
+  <string name="junluo_camera_notification_starting">摄像头会话正在启动</string>
+  <string name="junluo_camera_notification_manual_session">摄像头临时使用中</string>
+  <string name="junluo_camera_notification_front_standby">前置摄像头待命已开启</string>
+  <string name="junluo_camera_notification_back_standby">后置摄像头待命已开启</string>
+  <string name="junluo_camera_notification_front_observing">前置摄像头正在完成单次观察</string>
+  <string name="junluo_camera_notification_back_observing">后置摄像头正在完成单次观察</string>
+  <string name="junluo_camera_notification_stopping">摄像头观察会话正在停止</string>
+  <string name="junluo_camera_notification_manual_paused">摄像头观察会话已为手动拍照暂停</string>
+  <string name="junluo_camera_notification_automatic_quiet">自动观察处于静默暂停</string>
+  <string name="junluo_camera_notification_automatic_restricted">自动观察当前受前置条件限制</string>
+  <string name="junluo_camera_notification_front_preview_starting">前置摄像头页面预览正在启动</string>
+  <string name="junluo_camera_notification_back_preview_starting">后置摄像头页面预览正在启动</string>
+  <string name="junluo_camera_notification_front_previewing">前置摄像头页面预览正在运行</string>
+  <string name="junluo_camera_notification_back_previewing">后置摄像头页面预览正在运行</string>
+  <string name="junluo_camera_notification_stopped_title">摄像头观察会话已停止</string>
+  <string name="junluo_camera_notification_stop_action">立即停止</string>
+  <string name="junluo_camera_notification_low_battery">低电量，模型新拍摄暂停；手动仍可用</string>
+  <string name="junluo_camera_notification_thermal_paused">系统温控限制，新拍摄与预览暂停</string>
+</resources>

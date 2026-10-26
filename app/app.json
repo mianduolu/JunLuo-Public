@@ -1,0 +1,123 @@
+{
+  "expo": {
+    "name": "君落",
+    "slug": "junluo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/app-icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/app-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#DFEDD8"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio",
+          "location"
+        ]
+      }
+    },
+    "android": {
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_CAMERA",
+        "FOREGROUND_SERVICE_LOCATION",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "MANAGE_EXTERNAL_STORAGE",
+        "MODIFY_AUDIO_SETTINGS",
+        "POST_NOTIFICATIONS",
+        "READ_CONTACTS",
+        "RECEIVE_BOOT_COMPLETED",
+        "RECORD_AUDIO"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/app-icon.png",
+        "backgroundColor": "#DFEDD8"
+      },
+      "edgeToEdgeEnabled": true,
+      "softwareKeyboardLayoutMode": "resize",
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.junluo"
+    },
+    "web": {
+      "favicon": "./assets/app-icon.png"
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "允许君落读取你选择的图片作为背景或一起走过的照片。"
+        }
+      ],
+      [
+        "expo-sqlite",
+        {
+          "enableFTS": true
+        }
+      ],
+      "expo-notifications",
+      "expo-background-task",
+      [
+        "expo-location",
+        {
+          "isAndroidBackgroundLocationEnabled": true,
+          "isIosBackgroundLocationEnabled": true,
+          "locationAlwaysAndWhenInUsePermission": "允许君落在你开启附近世界后低频更新附近状态。",
+          "locationWhenInUsePermission": "允许君落读取当前位置，用来显示天气和附近世界。"
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "允许君落录制语音消息发给白云小姐。"
+        }
+      ],
+      [
+        "@livekit/react-native-expo-plugin",
+        {
+          "android": {
+            "audioType": "communication"
+          },
+          "ios": {
+            "enableMultitaskingCameraAccess": false
+          }
+        }
+      ],
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "microphonePermission": "允许君落在语音通话中使用麦克风。"
+        }
+      ],
+      "expo-asset",
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": false
+        }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "允许君落连接蓝牙身体信号设备。"
+        }
+      ],
+      "./plugins/withJunLuoBleAndroid",
+      "./plugins/withJunLuoStrongAlarm",
+      "./plugins/withJunLuoIncomingCall",
+      "./plugins/withJunLuoCameraAndroid",
+      "./plugins/withJunLuoRecentDeviceUseAndroid"
+    ]
+  }
+}

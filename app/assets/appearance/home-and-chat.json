@@ -1,0 +1,39 @@
+{
+  "sky": {
+    "transitionMinutes": 10,
+    "themes": {
+      "midnight": { "key": "midnight", "label": "深夜", "colors": ["#1A183D", "#202347", "#46527A"] },
+      "dawn": { "key": "dawn", "label": "黎明", "colors": ["#A8ACEA", "#B4E0FA", "#F9EDCA"] },
+      "morning": { "key": "morning", "label": "早晨", "colors": ["#61CAFF", "#CBF4EC"] },
+      "noon": { "key": "noon", "label": "中午", "colors": ["#70B7FF", "#D6F7FF"] },
+      "afternoon": { "key": "afternoon", "label": "下午", "colors": ["#A7C6E6", "#F2D0CA", "#F1DCB4"] },
+      "evening": { "key": "evening", "label": "傍晚", "colors": ["#3C4075", "#F5AE8B", "#FFF9AD"] },
+      "night": { "key": "night", "label": "夜晚", "colors": ["#433A6B", "#292257", "#0A7D99"] }
+    },
+    "windows": [
+      { "key": "midnight", "startMinute": 0, "endMinute": 300 },
+      { "key": "dawn", "startMinute": 300, "endMinute": 420 },
+      { "key": "morning", "startMinute": 420, "endMinute": 720 },
+      { "key": "noon", "startMinute": 720, "endMinute": 900 },
+      { "key": "afternoon", "startMinute": 900, "endMinute": 1080 },
+      { "key": "evening", "startMinute": 1080, "endMinute": 1200 },
+      { "key": "night", "startMinute": 1200, "endMinute": 1380 },
+      { "key": "midnight", "startMinute": 1380, "endMinute": 1440 }
+    ]
+  },
+  "chat": {
+    "messageAvatar": { "width": 38, "height": 38, "marginTop": 18 },
+    "iBubble": {
+      "borderRadius": 16, "borderTopLeftRadius": 5, "borderWidth": 1,
+      "borderColor": "rgba(157, 201, 240, 0.62)", "backgroundColor": "rgba(221, 239, 255, 0.95)",
+      "paddingHorizontal": 13, "paddingVertical": 10, "shadowColor": "#7195B8",
+      "shadowOffset": { "width": 0, "height": 2 }, "shadowOpacity": 0.12, "shadowRadius": 4, "elevation": 1
+    },
+    "youBubble": {
+      "borderRadius": 16, "borderTopRightRadius": 5, "borderWidth": 1,
+      "borderColor": "rgba(246, 176, 173, 0.56)", "backgroundColor": "rgba(255, 221, 216, 0.96)",
+      "paddingHorizontal": 13, "paddingVertical": 10, "shadowColor": "#BA7E77",
+      "shadowOffset": { "width": 0, "height": 2 }, "shadowOpacity": 0.1, "shadowRadius": 4, "elevation": 1
+    }
+  }
+}

@@ -1,0 +1,21 @@
+<resources>
+  <string name="app_name">君落</string>
+  <string name="accessibility_service_description">允许君落读取当前窗口摘要，用于白云小姐的手机活动提醒。</string>
+  <string name="expo_splash_screen_resize_mode" translatable="false">contain</string>
+  <string name="expo_splash_screen_status_bar_translucent" translatable="false">false</string>
+  <string name="phone_collector_channel_name">君落 使用统计</string>
+  <string name="phone_collector_notification_title">君落正在记录应用使用</string>
+  <string name="mi_band_6_heart_rate_channel_name">君落 心率读取</string>
+  <string name="mi_band_6_heart_rate_channel_description">维持五分钟的小米手环心率读取</string>
+  <string name="mi_band_6_heart_rate_notification_title">君落正在读取心率</string>
+  <string name="mi_band_6_heart_rate_notification_text">将在 5 分钟后自动停止</string>
+  <string name="mi_band_6_heart_rate_notification_stop">停止</string>
+  <string name="body_signal_guardian_channel_name">君落 穿戴设备守候</string>
+  <string name="body_signal_guardian_channel_description">在已授权时维持主穿戴设备的低功耗连接</string>
+  <string name="body_signal_guardian_notification_title">君落正在守候穿戴设备</string>
+  <string name="body_signal_guardian_notification_ready">设备已就绪，传感器保持关闭</string>
+  <string name="body_signal_guardian_notification_sampling">君落正在读取心率，将在 5 分钟后自动停止</string>
+  <string name="body_signal_guardian_notification_scheduled_sampling">君落正在节制读取心率，最多两分钟后停止</string>
+  <string name="body_signal_guardian_notification_pause">暂停守候</string>
+  <string name="phone_collector_notification_text">正在后台记录前台应用活动</string>
+</resources>

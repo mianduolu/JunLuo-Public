@@ -1,0 +1,150 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+  <uses-permission-sdk-23 android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30"/>
+  <uses-permission-sdk-23 android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30"/>
+  <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+  <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION"/>
+  <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" android:maxSdkVersion="28"/>
+  <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+  <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+  <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+  <uses-permission android:usesPermissionFlags="neverForLocation" tools:targetApi="31" android:name="android.permission.BLUETOOTH_SCAN"/>
+  <uses-permission android:name="android.permission.CAMERA"/>
+  <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE"/>
+  <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+  <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage"/>
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+  <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"/>
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+  <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission"/>
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+  <uses-permission android:name="android.permission.READ_CONTACTS"/>
+  <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+  <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+  <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+  <uses-permission android:name="android.permission.VIBRATE"/>
+  <uses-permission android:name="android.permission.WAKE_LOCK"/>
+  <uses-feature android:required="false" android:name="android.software.companion_device_setup"/>
+  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+  <uses-feature android:required="false" android:name="android.hardware.bluetooth_le"/>
+  <uses-feature android:required="false" android:name="android.hardware.camera.any"/>
+  <queries>
+    <intent>
+      <action android:name="android.intent.action.DIAL"/>
+      <data android:scheme="tel"/>
+    </intent>
+    <intent>
+      <action android:name="android.intent.action.VIEW"/>
+      <category android:name="android.intent.category.BROWSABLE"/>
+      <data android:scheme="https"/>
+    </intent>
+  </queries>
+  <application android:name=".MainApplication" android:usesCleartextTraffic="true" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:fullBackupContent="@xml/junluo_backup_rules" android:dataExtractionRules="@xml/junluo_data_extraction_rules" android:theme="@style/AppTheme" android:supportsRtl="true" android:enableOnBackInvokedCallback="false">
+    <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
+    <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
+    <meta-data android:name="expo.modules.updates.EXPO_UPDATES_LAUNCH_WAIT_MS" android:value="0"/>
+    <meta-data android:name="io.livekit.reactnative.expo.ANDROID_AUDIO_TYPE" android:value="communication"/>
+    <service android:name=".MiBand6RealtimeHeartRateService" android:foregroundServiceType="connectedDevice" android:exported="false"/>
+    <service android:name=".BodySignalGuardianService" android:foregroundServiceType="connectedDevice" android:exported="false" android:stopWithTask="false"/>
+    <service android:name=".PhoneActivityCollectorService" android:foregroundServiceType="specialUse" android:exported="false" android:stopWithTask="false">
+      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Continuous local phone usage observation and execution of user-authorized phone and app restrictions"/>
+    </service>
+    <receiver android:name=".PhoneRestrictionAlarmReceiver" android:enabled="true" android:exported="false">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED"/>
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+        <action android:name="android.intent.action.TIME_SET"/>
+        <action android:name="android.intent.action.TIMEZONE_CHANGED"/>
+        <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"/>
+      </intent-filter>
+    </receiver>
+    <service android:name=".PhoneGuardMessageTaskService" android:exported="false"/>
+    <service android:name=".chat.JunLuoChatReplyBackgroundService" android:foregroundServiceType="dataSync" android:exported="false"/>
+    <service android:name=".ShiyingBackfillBackgroundService" android:foregroundServiceType="dataSync" android:exported="false" android:stopWithTask="false"/>
+    <service android:name=".schedule.JunLuoScheduleReminderTaskService" android:foregroundServiceType="dataSync" android:exported="false"/>
+    <service android:name=".sleep.JunLuoSleepScheduleTaskService" android:foregroundServiceType="dataSync" android:exported="false"/>
+    <receiver android:name=".sleep.JunLuoSleepScheduleReceiver" android:enabled="true" android:exported="false">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED"/>
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+        <action android:name="android.intent.action.TIME_SET"/>
+        <action android:name="android.intent.action.TIMEZONE_CHANGED"/>
+        <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"/>
+      </intent-filter>
+    </receiver>
+    <receiver android:name=".schedule.JunLuoScheduleReminderReceiver" android:enabled="true" android:exported="false">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED"/>
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+        <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"/>
+      </intent-filter>
+    </receiver>
+    <service android:name=".BodySignalCompanionPresenceService" android:exported="true" android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+      <intent-filter>
+        <action android:name="android.companion.CompanionDeviceService"/>
+      </intent-filter>
+    </service>
+    <service android:enabled="true" android:exported="false" android:foregroundServiceType="camera" android:name=".camera.JunLuoCameraSessionService"/>
+    <service android:enabled="true" android:exported="false" android:name=".camera.JunLuoCameraObservationTaskService"/>
+    <service android:name="expo.modules.audio.service.AudioControlsService" android:exported="false" android:foregroundServiceType="mediaPlayback">
+      <intent-filter>
+        <action android:name="androidx.media3.session.MediaSessionService"/>
+      </intent-filter>
+    </service>
+    <service android:name=".JunLuoNotificationListenerService" android:exported="true" android:label="@string/app_name" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+      <intent-filter>
+        <action android:name="android.service.notification.NotificationListenerService"/>
+      </intent-filter>
+    </service>
+    <service android:name=".JunLuoAccessibilityService" android:exported="true" android:label="@string/app_name" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+      <intent-filter>
+        <action android:name="android.accessibilityservice.AccessibilityService"/>
+      </intent-filter>
+      <meta-data android:name="android.accessibilityservice" android:resource="@xml/junluo_accessibility_service"/>
+    </service>
+    <service android:enabled="true" android:exported="false" android:foregroundServiceType="mediaPlayback" android:name=".strongalarm.JunLuoStrongAlarmService"/>
+    <service android:enabled="true" android:exported="false" android:foregroundServiceType="mediaPlayback" android:name=".incomingcall.JunLuoIncomingCallService"/>
+    <activity android:name=".MainActivity" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true" android:screenOrientation="portrait">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+    </activity>
+    <activity android:excludeFromRecents="true" android:exported="false" android:theme="@style/AppTheme" android:name=".camera.JunLuoCameraManualSavePickerActivity"/>
+    <activity android:name=".PhoneRestrictionActivity" android:exported="false" android:excludeFromRecents="true" android:launchMode="singleTask" android:taskAffinity="${applicationId}.phoneRestriction" android:showWhenLocked="true" android:screenOrientation="portrait" android:theme="@style/JunLuoPhoneRestrictionTheme"/>
+    <receiver android:name=".PhoneRestrictionEmergencyReceiver" android:exported="false"/>
+    <activity android:excludeFromRecents="true" android:exported="false" android:showWhenLocked="true" android:turnScreenOn="true" android:name=".strongalarm.JunLuoStrongAlarmActivity"/>
+    <activity android:excludeFromRecents="true" android:exported="false" android:showWhenLocked="true" android:turnScreenOn="true" android:theme="@style/JunLuoIncomingCallTheme" android:name=".incomingcall.JunLuoIncomingCallActivity"/>
+    <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true">
+      <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/junluo_file_paths"/>
+    </provider>
+    <receiver android:enabled="true" android:exported="false" android:name=".strongalarm.JunLuoStrongAlarmReceiver"/>
+    <receiver android:enabled="true" android:exported="false" android:name=".incomingcall.JunLuoIncomingCallReceiver"/>
+    <receiver android:enabled="true" android:exported="true" android:name=".incomingcall.JunLuoIncomingCallBootReceiver">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED"/>
+      </intent-filter>
+    </receiver>
+    <receiver android:enabled="true" android:exported="false" android:name=".BodySignalGuardianSamplingAlarmReceiver"/>
+    <receiver android:enabled="true" android:exported="false" android:name=".BodySignalActivityContextReceiver">
+      <intent-filter>
+        <action android:name="com.anonymous.junluo.BODY_SIGNAL_ACTIVITY_TRANSITION"/>
+        <action android:name="com.anonymous.junluo.BODY_SIGNAL_ACTIVITY_FALLBACK"/>
+      </intent-filter>
+    </receiver>
+    <service android:enabled="true" android:exported="false" android:name=".BodySignalActivityContextService"/>
+    <receiver android:enabled="true" android:exported="false" android:name=".camera.JunLuoCameraAutomaticObservationAlarmReceiver"/>
+  </application>
+</manifest>
