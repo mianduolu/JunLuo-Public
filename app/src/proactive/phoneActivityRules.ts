@@ -24,7 +24,7 @@ const BLACK_RETURN_WINDOW_MINUTES = 10;
 const BLACK_DAILY_LIMIT_MINUTES = 60;
 const WHITE_THRESHOLD_MINUTES = 30;
 const JEALOUSY_COOLDOWN_MINUTES = 2;
-const JUNLUO_PACKAGE_ID = 'com.anonymous.junluo';
+const JUNLUO_PACKAGE_ID = 'com.anonymous.junluo.trial';
 
 export type PhoneActivityRuleKind = 'blacklist' | 'whitelist' | 'jealousy';
 export type PhoneActivityJealousyCandidateStatus = 'pending' | 'accepted' | 'dismissed';
@@ -231,7 +231,7 @@ function buildRuleId(kind: PhoneActivityRuleKind, source: string, title: string)
 export function isJunLuoPhoneApp(source?: string, title?: string) {
   const normalizedSource = source?.trim().toLowerCase();
   const normalizedTitle = title?.trim().toLowerCase();
-  return normalizedSource === JUNLUO_PACKAGE_ID || normalizedTitle === '君落' || normalizedTitle === 'junluo';
+  return normalizedSource === JUNLUO_PACKAGE_ID || normalizedTitle === '君落试用' || normalizedTitle === 'junluo';
 }
 
 function isForegroundLog(log: PhoneActivityLog) {

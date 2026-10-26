@@ -14,8 +14,8 @@ export function isVisiblePhoneUsageApp(source?: string | null, title?: string | 
   const normalizedSource = source?.trim().toLowerCase() ?? '';
   const normalizedTitle = title?.trim().toLowerCase() ?? '';
   if (
-    normalizedSource === 'com.anonymous.junluo'
-    || normalizedTitle === '君落'
+    normalizedSource === 'com.anonymous.junluo.trial'
+    || normalizedTitle === '君落试用'
     || normalizedTitle === 'junluo'
   ) {
     return false;

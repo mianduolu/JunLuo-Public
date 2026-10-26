@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "君落",
-    "slug": "junluo",
+    "name": "君落试用",
+    "slug": "junluo-trial",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/app-icon.png",
@@ -45,7 +45,7 @@
       "edgeToEdgeEnabled": true,
       "softwareKeyboardLayoutMode": "resize",
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.junluo"
+      "package": "com.anonymous.junluo.trial"
     },
     "web": {
       "favicon": "./assets/app-icon.png"

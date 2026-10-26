@@ -1,5 +1,5 @@
 <resources>
-  <string name="app_name">君落</string>
+  <string name="app_name">君落试用</string>
   <string name="accessibility_service_description">允许君落读取当前窗口摘要，用于白云小姐的手机活动提醒。</string>
   <string name="expo_splash_screen_resize_mode" translatable="false">contain</string>
   <string name="expo_splash_screen_status_bar_translucent" translatable="false">false</string>

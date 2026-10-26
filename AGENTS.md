@@ -7,4 +7,5 @@
 - Keep credentials, recordings, databases and local diagnostics out of Git.
 - Use focused checks for the changed feature. Do not reset unrelated work or force an upstream update over character customizations.
 - See README.md and UPDATING.md for source scope, setup and feature update instructions.
+- Keep the trial application identity (`com.anonymous.junluo.trial`, 君落试用) and its own-usage filters when merging functional changes. Java namespace remains separate from the application ID. Keep signing files local and reuse the existing trial signature for compatible APK updates.
 

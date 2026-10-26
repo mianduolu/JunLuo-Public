@@ -126,7 +126,7 @@ android {
 
     namespace 'com.anonymous.junluo'
     defaultConfig {
-        applicationId findProperty('junluoApplicationId') ?: 'com.anonymous.junluo'
+        applicationId findProperty('junluoApplicationId') ?: 'com.anonymous.junluo.trial'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

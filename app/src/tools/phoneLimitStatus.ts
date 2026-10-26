@@ -140,10 +140,10 @@ function usageProjection(s: PhoneLimitStatusSources, q: PhoneLimitQuerySource, i
       apps.push([pkg, `${name ? `${name}：` : ''}${formatPhoneUsageDuration(amount)}`]);
     }
   }
-  const own = s.ownUsage?.available && s.ownUsage.source === 'com.anonymous.junluo'
+  const own = s.ownUsage?.available && s.ownUsage.source === 'com.anonymous.junluo.trial'
     ? s.ownUsage.days.find(day => day.dateKey === q.localDate) : undefined;
   if (!own || !time(own.durationMs, true)) missing.push('junluo_usage');
-  else if (own.durationMs > 0) apps.push(['com.anonymous.junluo', `${s.ownUsage!.title}：${formatPhoneUsageDuration(own.durationMs)}`]);
+  else if (own.durationMs > 0) apps.push(['com.anonymous.junluo.trial', `${s.ownUsage!.title}：${formatPhoneUsageDuration(own.durationMs)}`]);
   const u = phoneLimitObject(s.query?.usage);
   const observation = u?.restorePaused === false ? phoneLimitObject(u.usageObservation) : null;
   let current: Row | null = null;
@@ -331,7 +331,7 @@ export function projectPhoneLimitStatus(s: PhoneLimitStatusSources): PhoneLimitS
   })) : unknown();
   const usage = usageProjection(s, q, iso);
   if (!usage || usage.missing) partial = true;
-  if (usage?.apps && Object.keys(usage.apps).some(pkg => pkg !== 'com.anonymous.junluo' && !appName(s, pkg))) partial = true;
+  if (usage?.apps && Object.keys(usage.apps).some(pkg => pkg !== 'com.anonymous.junluo.trial' && !appName(s, pkg))) partial = true;
   const data = { usage, locks, access, options, display, allowedApps, appLimits, timeBlocks, adjustments,
     releaseMinutes, releaseApps, planOptions, plans };
   if (Object.values(data).every(v => v === null)) return failed;
