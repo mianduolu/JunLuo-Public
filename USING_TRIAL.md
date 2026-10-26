@@ -1,10 +1,10 @@
-# 安装君落试用
+# 安装君落试用（默认图片版）
 
 ## 下载
 
 打开[试用安装包下载页](https://github.com/mianduolu/JunLuo-Public/releases/tag/trial-2026-10-27)，展开 Assets，下载 `JunLuo-Trial-20261027.apk`，在 Android 手机上安装。页面自动附带的 Source code 压缩包用于改源码，不是安装包。
 
-App 名称为“君落试用”，包名为 `com.anonymous.junluo.trial`，资料与原“君落”分别保存。本次为试用版本，默认仍使用示例图片、部分白云／小仓鼠称呼与本地台词。
+App 名称为“君落试用”，包名为 `com.anonymous.junluo.trial`，资料与原“君落”分别保存。这份现成 APK 是默认图片试用版，使用示例立绘、头像、图标，以及部分白云／小仓鼠称呼与本地台词。
 
 ## 第一次使用
 
@@ -18,6 +18,8 @@ App 名称为“君落试用”，包名为 `com.anonymous.junluo.trial`，资�
 
 ## 想换立绘时
 
-可以先安装体验。需要换图时，把仓库和图片交给自己的 Codex，按照 `CUSTOMIZATION.md` 修改源码里的图片，再重新打包。设置里的角色核心只改人格材料；图片、界面称呼和本地固定台词分别按源码核对。
+可以先安装默认图片版体验。想换自己的立绘、头像或图标时，[下载源码 ZIP](https://github.com/mianduolu/JunLuo-Public/archive/refs/heads/main.zip)，把工程和图片交给自己的 Codex，按照 [CUSTOMIZATION.md](CUSTOMIZATION.md) 换图，再重新打包。
+
+App 现有的相册换背景功能照常可用。设置里的角色核心只改人格材料；内置角色图片、界面称呼和本地固定台词分别按源码核对。
 
 后续安装同一试用包名的更新，应保持同一签名；自行重新签名的包不能直接覆盖维护者签名的旧安装。先保留自己的重要资料，再按实际安装提示处理。

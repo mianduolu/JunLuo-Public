@@ -1,8 +1,13 @@
-# 君落 · 公开试用源码
+# 君落 · 试用版与源码
 
 这是君落 Android 陪伴 App 的公开试用版本，基于 React Native、Expo SDK 54 和 TypeScript。它使用独立仓库与新的 Git 历史维护。
 
-**直接体验：** 下载[君落试用 APK](https://github.com/mianduolu/JunLuo-Public/releases/download/trial-2026-10-27/JunLuo-Trial-20261027.apk)，或打开[本次发布页](https://github.com/mianduolu/JunLuo-Public/releases/tag/trial-2026-10-27)。安装与首次设置见 `USING_TRIAL.md`。源码保留给想换图、改代码和自己打包的人。
+## 选择下载
+
+- **先体验默认图片版：** [下载君落试用 APK](https://github.com/mianduolu/JunLuo-Public/releases/download/trial-2026-10-27/JunLuo-Trial-20261027.apk)，直接安装，使用现成的立绘、头像和图标。也可以打开[发布页](https://github.com/mianduolu/JunLuo-Public/releases/tag/trial-2026-10-27)查看附件。
+- **想换自己的立绘等内置图片：** [下载源码 ZIP](https://github.com/mianduolu/JunLuo-Public/archive/refs/heads/main.zip)，按照 [CUSTOMIZATION.md](CUSTOMIZATION.md) 替换素材，再重新打包 APK。
+
+安装与首次设置见 [USING_TRIAL.md](USING_TRIAL.md)。角色核心设定仍可在 App 里填写，现有的相册换背景功能也照常可用；替换内置立绘、头像和图标走源码换图流程。
 
 ## 这份源码包含什么
 
