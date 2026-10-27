@@ -139,13 +139,13 @@ class BodySignalCompanionModule(
             return
         }
         pendingAssociationPromise = promise
-        val existingAssociation = associationForAddress(deviceAddress)
-        if (existingAssociation != null) {
+        val existingAssociationId = associationIdForAddress(deviceAddress)
+        if (existingAssociationId != null) {
             runCatching {
-                val address = consolidateAssociation(existingAssociation.id)
+                val address = consolidateAssociation(existingAssociationId)
                 companionManager().startObservingDevicePresence(address)
             }.onSuccess {
-                resolvePending(existingAssociation.id, deviceProfileId, true)
+                resolvePending(existingAssociationId, deviceProfileId, true)
             }.onFailure {
                 rejectPending("COMPANION_OBSERVATION_FAILED", it.message, it)
             }
@@ -276,10 +276,12 @@ class BodySignalCompanionModule(
             .onFailure { promise.reject("COMPANION_OBSERVATION_CHANGE_FAILED", it.message, it) }
     }
 
-    private fun associationForAddress(deviceAddress: String): AssociationInfo? {
+    // RN reflects all method signatures even when the device is below API 33.
+    private fun associationIdForAddress(deviceAddress: String): Int? {
         return companionManager().myAssociations
             .filter { association -> association.deviceMacAddress?.toString()?.equals(deviceAddress, ignoreCase = true) == true }
             .minByOrNull { association -> association.id }
+            ?.id
     }
 
     private fun consolidateAssociation(associationId: Int): String {
