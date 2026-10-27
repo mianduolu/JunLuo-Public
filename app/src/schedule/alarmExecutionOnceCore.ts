@@ -7,6 +7,7 @@ import type {
 import type {
   SyncExecutionOnceCoordinatorV2,
 } from '../sync/syncExecutionOnceV2Controller';
+import type { PhonePrimaryInternalExecutor } from '../runtime/phonePrimaryInternalExecution';
 
 export type AlarmExecutionState = {
   id: string;
@@ -36,6 +37,7 @@ export type AlarmHandlingOncePorts = {
   loadAlarm(alarmId: string): Promise<AlarmExecutionState | null>;
   loadRelayBaseUrl(): Promise<string>;
   syncEnrollmentReady: boolean;
+  phonePrimaryExecute?: PhonePrimaryInternalExecutor;
 };
 
 export function alarmOutcomeFromState(
@@ -72,7 +74,7 @@ export async function runAlarmHandlingOnce(
     };
   }
 
-  if (!ports.syncEnrollmentReady) {
+  if (!ports.syncEnrollmentReady && !ports.phonePrimaryExecute) {
     const outcome = await ports.executeLocally();
     const current = await ports.loadAlarm(alarm.id);
     return {
@@ -82,11 +84,13 @@ export async function runAlarmHandlingOnce(
     };
   }
 
-  const baseUrl = (await ports.loadRelayBaseUrl()).trim();
-  if (!baseUrl) throw new Error('sync-relay-not-configured');
-  const coordinator = await ports.createCoordinator(baseUrl);
+  const executeOnce = ports.phonePrimaryExecute ?? (async (input) => {
+    const baseUrl = (await ports.loadRelayBaseUrl()).trim();
+    if (!baseUrl) throw new Error('sync-relay-not-configured');
+    return (await ports.createCoordinator(baseUrl)).execute(input);
+  });
   let executedNow = false;
-  const result = await coordinator.execute({
+  const result = await executeOnce({
     operationId: createSyncExecutionOperationId({
       category: 'alarm',
       scope: 'schedule.alarm',

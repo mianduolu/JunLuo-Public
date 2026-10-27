@@ -10,6 +10,47 @@ export type GiftUnderstandingReceipt = {
 type StateRow = { last_failed_attempt: number; retry_at: number; error_code: string | null };
 type ReceiptRow = { attachment_id: string; original_id: string; content: string; understood_at: number };
 
+const LOCAL_STARTED = 'gift-local-started';
+
+export async function isGiftLocalWorkStarted(token: GiftWorkToken, stage: string, attempt: number) {
+  const state = await loadGiftProcessingState(token, stage);
+  return state.errorCode === LOCAL_STARTED && state.lastFailedAttempt + 1 === attempt;
+}
+
+/** The existing stage row is the local start boundary, not a new receipt. */
+export async function startGiftLocalWork(token: GiftWorkToken, stage: string, attempt: number) {
+  if (!Number.isSafeInteger(attempt) || attempt < 1) throw Error('gift-invalid-processing-state');
+  const result = await commitGiftWork(token, async transaction => {
+    const row = await transaction.getFirstAsync<StateRow>(
+      'SELECT * FROM gift_processing_state WHERE gift_id=? AND gift_revision=? AND stage=?', token.id, token.revision, stage);
+    const previous = row?.last_failed_attempt ?? 0;
+    if (attempt !== previous + 1 || row?.error_code === LOCAL_STARTED) return false;
+    await transaction.runAsync(`INSERT INTO gift_processing_state(gift_id,gift_revision,stage,last_failed_attempt,retry_at,error_code)
+      VALUES(?,?,?,?,?,?) ON CONFLICT(gift_id,gift_revision,stage) DO UPDATE SET
+      last_failed_attempt=excluded.last_failed_attempt,retry_at=excluded.retry_at,error_code=excluded.error_code`,
+    token.id, token.revision, stage, previous, Date.now(), LOCAL_STARTED);
+    return true;
+  });
+  return result.committed && result.value;
+}
+
+/** Reception saves a new gift revision; only its real receipt may retire the old stage start. */
+export async function clearGiftLocalReceptionStart(token: GiftWorkToken, attempt: number, savedRevision: number) {
+  if (savedRevision !== token.revision + 1) throw Error('gift-invalid-processing-state');
+  return commitGiftWork({ ...token, revision: savedRevision }, transaction => transaction.runAsync(
+    'DELETE FROM gift_processing_state WHERE gift_id=? AND gift_revision=? AND stage=? AND error_code=? AND last_failed_attempt=?',
+    token.id, token.revision, 'reception', LOCAL_STARTED, attempt - 1));
+}
+
+/** These errors prove no accepted result needs recovering; transport uncertainty does not. */
+export function isKnownGiftLocalFailure(error: unknown) {
+  const code = error instanceof Error ? error.message : '';
+  return /^gift-(?:original|echo)-request-(?:auth|rate-limited|http-error|invalid-config|invalid-input|preflight-failed|empty-response|incomplete-response|invalid-response|provider-error)$/.test(code)
+    || ['gift-request-postponed', 'gift-echo-request-postponed', 'gift-invalid-reception-response', 'gift-echo-invalid-choice',
+      'gift-audio-connection-unavailable', 'gift-image-connection-unavailable', 'gift-chat-connection-unavailable',
+      'gift-reception-connection-unavailable'].includes(code);
+}
+
 export async function listDueGiftVersions(now: number): Promise<GiftVersion[]> {
   const rows = await (await getMemoryDatabase()).getAllAsync<{ id: string; revision: number }>(
     `SELECT id,revision FROM gift_records WHERE json_extract(record_json,'$.deliveryStatus')='scheduled'
@@ -34,6 +75,7 @@ export async function deferGiftProcessing(token: GiftWorkToken, stage: string, a
     const row = await transaction.getFirstAsync<StateRow>(
       'SELECT * FROM gift_processing_state WHERE gift_id=? AND gift_revision=? AND stage=?', token.id, token.revision, stage);
     const previous = row?.last_failed_attempt ?? 0;
+    if (row?.error_code === LOCAL_STARTED && !knownFailure) return false;
     if (attempt !== previous + 1) return false;
     await transaction.runAsync(`INSERT INTO gift_processing_state(gift_id,gift_revision,stage,last_failed_attempt,retry_at,error_code)
       VALUES(?,?,?,?,?,?) ON CONFLICT(gift_id,gift_revision,stage) DO UPDATE SET

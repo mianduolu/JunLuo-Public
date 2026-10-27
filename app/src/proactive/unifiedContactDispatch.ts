@@ -13,6 +13,7 @@ import { loadJunluoAffectState, loadJunluoDesireState } from '../life/junluoInne
 import { loadJunluoDesireSnapshot, isJunluoWantsAwake } from '../life/junluoDesireRuntime';
 import { loadActiveFocusSession } from '../focus/focusStore';
 import { isAutomaticRemoteAiAllowed, loadAutomaticRemoteAiPolicy } from '../runtime/automaticRemoteAiPolicy';
+import { ensurePhonePrimaryActivation, loadPhonePrimaryActivation } from '../runtime/phonePrimaryRuntime';
 import { captureBackupRestoreDataEpoch, canCommitBackupRestoreDataEpoch, runBackupRestoreDataEpochCommit, subscribeBackupRestoreRuntimeState } from '../backup/backupRestoreCoordinator';
 import { appendMessagesToChatSession, loadChatStateFast, loadChatSessionMessage, loadChatSessionMessagePage } from '../chat/chatStorage';
 import { emitChatMessagesAppended } from '../chat/chatMessageEvents';
@@ -31,7 +32,7 @@ import { cameraObservationIdsFromResults, saveCameraResponseDraft, completeCamer
   cameraObservationResponsesCurrent } from '../camera/cameraObservationResponseDelivery';
 import { getCameraObservationResponse } from '../camera/cameraObservationStore';
 import { runOrdinaryProactiveToolTurn } from './proactiveToolTurn';
-import { parseOrdinaryProactiveLiteResponseWithDiagnostics } from './proactiveLitePrompt';
+import { parseOrdinaryProactiveLiteResponseWithDiagnostics, recoverCompleteProactiveLiteResponse } from './proactiveLitePrompt';
 import { recordActiveMessageDelivery, loadActiveMessageCoordinatorSnapshot } from './activeMessageCoordinator';
 import { contactIsPaused, contactOpportunityDecision, contactWaitMs, finishContactOpportunity, selectContactMotives, UNIFIED_CONTACT_TASK,
   SLEEPING_BODY_CONTACT_TASK, CONTACT_DAY_LIMIT, CONTACT_MODEL_REQUEST_TIMEOUT_MS, contactLocalDay, contactMessageId, isContactPastMemorySource, type ContactOpportunity } from './unifiedContact';
@@ -44,7 +45,9 @@ import { prepareContactWeeklyReviews, loadContactWeeklyReview, recordContactWeek
 import { prepareContactPastMemory, loadContactPastMemory, recordContactPastMemoryProvided, CONTACT_PAST_MEMORY_MIN_CHARS,
   type ContactPastMemoryPreparation } from './unifiedContactMemory';
 import { recordContactScheduleRecoveryProvided } from './unifiedContactScheduleRecovery';
-import { contactBudgetDeferredUntil, normalizeContactBodyDiagnostics, processUnifiedContact } from './unifiedContactRuntime';
+import { contactBudgetDeferredUntil, normalizeContactBodyDiagnostics, processUnifiedContact,
+  bindPhoneLocalContactOwner, isPhoneLocalContactOpportunity, phoneLocalContactId,
+  prepareSharedContactForPhoneLocal, PHONE_LOCAL_CONTACT_ROUND_MS } from './unifiedContactRuntime';
 import { contactQwenChatSource, contactQwenChatMode, contactSourcesCurrent } from './unifiedContactHandoff';
 import { loadPriorityHeartContact, markHeartContactHandled } from '../bodySignal/bodySignalProactiveCareRuntime';
 import { loadPriorityPeriodContact, markPeriodContactHandled, PERIOD_PRIORITY_WINDOW_MS } from '../period/periodCareEvents';
@@ -83,7 +86,7 @@ export async function stopUnifiedContactForHost() {
     else finishContactOpportunity(state, Date.now(), 'host_stopped');
     return current;
   });
-  if (op) await getProactiveDeviceControl()?.complete(op).catch(() => undefined);
+  if (op && Platform.OS !== 'android') await getProactiveDeviceControl()?.complete(op).catch(() => undefined);
 }
 
 async function readEmergencyContact(receipt: PhoneEmergencyReceipt = {}) {
@@ -179,21 +182,28 @@ async function dispatch(input: {
   const hostCurrent = () => !contactHostPaused && hostGeneration === contactHostGeneration;
   const epoch = captureBackupRestoreDataEpoch();
   if (epoch === null) return 0;
+  const phoneLocal = Platform.OS === 'android' && !!await ensurePhonePrimaryActivation();
+  if (Platform.OS === 'android' && !phoneLocal) return 0;
   // Establish the start even when automatic calls are currently disabled.
   await changeUnifiedContactState(() => undefined, epoch);
   await recoverStoredUnifiedContactMessages(epoch);
-  const control = getProactiveDeviceControl();
-  if (!control) return 0;
+  const control = phoneLocal ? undefined : getProactiveDeviceControl();
+  if (!phoneLocal && !control) return 0;
   const sharedReadAt = Date.now();
-  const shared = await control.read().catch(() => undefined);
-  if (!shared?.migrationComplete || !hostCurrent()) return 0;
-  const localState = await readUnifiedContactState();
-  const state = withSharedContactLedger(localState, shared);
+  const shared = control ? await control.read().catch(() => undefined) : undefined;
+  if ((!phoneLocal && !shared?.migrationComplete) || !hostCurrent()) return 0;
+  let localState = await readUnifiedContactState();
+  if (phoneLocal && localState.current?.status !== 'finished' && localState.current
+    && !isPhoneLocalContactOpportunity(localState.current)) {
+    await changeUnifiedContactState(next => prepareSharedContactForPhoneLocal(next, Date.now()), epoch);
+    localState = await readUnifiedContactState();
+  }
+  const state = shared ? withSharedContactLedger(localState, shared) : localState;
   const current = state.current?.status !== 'finished' ? state.current : null;
-  if (current) {
-    const round = shared.current;
-    if (!round || round.opportunityId !== current.id || round.ownerDeviceId !== control.deviceId
-      || round.runtimeEpoch !== control.runtimeEpoch || !['reserved', 'started'].includes(round.state)) {
+  if (current && !phoneLocal) {
+    const round = shared!.current;
+    if (!round || round.opportunityId !== current.id || round.ownerDeviceId !== control!.deviceId
+      || round.runtimeEpoch !== control!.runtimeEpoch || !['reserved', 'started'].includes(round.state)) {
       // An unstarted reservation has no cooldown; an old runtime cannot replay a paid round.
       await changeUnifiedContactState(next => {
         if (next.current?.id !== current.id) return;
@@ -202,7 +212,8 @@ async function dispatch(input: {
       }, epoch);
       return 0;
     }
-  } else if (shared.used >= CONTACT_DAY_LIMIT) return 0;
+  } else if (!current && (shared ? shared.used >= CONTACT_DAY_LIMIT
+    : state.day === contactLocalDay(Date.now()) && state.used >= CONTACT_DAY_LIMIT)) return 0;
   const noteSourceWait = (reason: string) => console.info('[unified-contact-check]', {
     stage: 'prepare_source', reason, important: current?.important,
     status: current?.status, requests: current?.requests, createdAt: current?.createdAt,
@@ -257,10 +268,10 @@ async function dispatch(input: {
       nextAt: decision.nextAt, enabled: actual.enabled, asleep: actual.asleep, occupied: actual.occupied, used: state.used });
     return 0;
   }
-  if (!current && !important && !phoneContact && (shared.waitReason || shared.routeDeviceId !== control.deviceId)) return 0;
-  if (!current) await changeUnifiedContactState(next => {
+  if (!phoneLocal && !current && !important && !phoneContact && (shared!.waitReason || shared!.routeDeviceId !== control!.deviceId)) return 0;
+  if (!phoneLocal && !current) await changeUnifiedContactState(next => {
     if (next.current && next.current.status !== 'finished') throw Error('contact-already-claimed');
-    const merged = withSharedContactLedger(next, shared);
+    const merged = withSharedContactLedger(next, shared!);
     next.day = merged.day; next.used = merged.used;
     next.lastEndedAt = merged.lastEndedAt; next.lastOrdinaryReplyAt = merged.lastOrdinaryReplyAt;
     next.motiveLastSelectedAt = merged.motiveLastSelectedAt;
@@ -375,7 +386,8 @@ async function dispatch(input: {
     ...(!important ? { materialVersion: 2 as const } : {}),
     ...(phoneContact && emergency ? { phoneEmergency: { latest: emergency.latest, references: [],
       pendingIds: emergency.pendingIds, attemptedAt: now } } : {}),
-    id: `${!important && !phoneContact ? ORDINARY_CONTACT_ID_PREFIX : 'unified-contact:'}${sessionId}:${now}`,
+    id: phoneLocal ? phoneLocalContactId(sessionId, now, !important && !phoneContact)
+      : `${!important && !phoneContact ? ORDINARY_CONTACT_ID_PREFIX : 'unified-contact:'}${sessionId}:${now}`,
     sessionId, createdAt: now, expiresAt: important?.expiresAt ?? Number.MAX_SAFE_INTEGER,
     motives, sources: [...(important ? [{ id: important.id, kind: important.kind, version: important.version }] : []),
       ...entries.map(entry => ({ id: entry.id, version: entry.version, kind: entry.kind ?? (entry.care ? 'care' as const : 'life' as const) }))],
@@ -388,12 +400,12 @@ async function dispatch(input: {
   };
   // No model/slot/motive consumption occurs on a lost reservation.
   if (!hostCurrent()) return 0;
-  if (!current) {
-    try { await control.reserve(candidate, shared, important || phoneContact ? 0 : contactWaitMs(values[motives[0]]) ?? 0); }
+  if (!phoneLocal && !current) {
+    try { await control!.reserve(candidate, shared!, important || phoneContact ? 0 : contactWaitMs(values[motives[0]]) ?? 0); }
     catch { return 0; }
   }
   if (!hostCurrent()) {
-    if (!current) await control.complete(candidate).catch(() => undefined);
+    if (!current && control) await control.complete(candidate).catch(() => undefined);
     return 0;
   }
   if (!candidate.important && !candidate.phoneEmergency && candidate.requests === 0 && !candidate.messages.length
@@ -467,8 +479,10 @@ async function dispatch(input: {
   const roundController = new AbortController();
   activeContactAbort = roundController;
   let roundTimer: ReturnType<typeof setTimeout> | undefined;
-  let admittedDeadline: number | undefined = current && shared.current?.state === 'started' && shared.current.deadlineAt !== null
-    ? sharedReadAt + Math.max(0, shared.current.deadlineAt - shared.serverTimeMs) : undefined;
+  let admittedDeadline: number | undefined = phoneLocal && current && isPhoneLocalContactOpportunity(current)
+    && current.expiresAt < Number.MAX_SAFE_INTEGER ? current.expiresAt
+    : current && shared?.current?.state === 'started' && shared.current.deadlineAt !== null
+      ? sharedReadAt + Math.max(0, shared.current.deadlineAt - shared.serverTimeMs) : undefined;
   const stopForEpoch = subscribeBackupRestoreRuntimeState(() => {
     if (!canCommitBackupRestoreDataEpoch(epoch)) roundController.abort();
   });
@@ -476,11 +490,16 @@ async function dispatch(input: {
     if (!hostCurrent() || roundController.signal.aborted || !canCommitBackupRestoreDataEpoch(epoch)) throw Error('contact-control-owner-changed');
     if (admittedDeadline === undefined) {
       const startRequestedAt = Date.now();
-      const round = await control.start(op);
-      if (!hostCurrent() || roundController.signal.aborted || !canCommitBackupRestoreDataEpoch(epoch)) throw Error('contact-control-owner-changed');
-      const serverNow = control.snapshot()?.serverTimeMs;
-      if (round.deadlineAt === null || serverNow === undefined) throw Error('contact-control-deadline-missing');
-      admittedDeadline = startRequestedAt + Math.max(0, round.deadlineAt - serverNow);
+      if (phoneLocal) {
+        if (!isPhoneLocalContactOpportunity(op)) throw Error('contact-local-legacy-request-sealed');
+        admittedDeadline = startRequestedAt + PHONE_LOCAL_CONTACT_ROUND_MS;
+      } else {
+        const round = await control!.start(op);
+        if (!hostCurrent() || roundController.signal.aborted || !canCommitBackupRestoreDataEpoch(epoch)) throw Error('contact-control-owner-changed');
+        const serverNow = control!.snapshot()?.serverTimeMs;
+        if (round.deadlineAt === null || serverNow === undefined) throw Error('contact-control-deadline-missing');
+        admittedDeadline = startRequestedAt + Math.max(0, round.deadlineAt - serverNow);
+      }
     }
     const deadline = Math.min(op.expiresAt, admittedDeadline);
     if (deadline <= Date.now()) { roundController.abort(); throw Error('contact-control-expired'); }
@@ -492,6 +511,8 @@ async function dispatch(input: {
     if (roundTimer) clearTimeout(roundTimer);
     roundTimer = setTimeout(() => roundController.abort(), Math.max(0, deadline - Date.now()));
   };
+  const releaseLocalOwner = phoneLocal && isPhoneLocalContactOpportunity(candidate)
+    ? bindPhoneLocalContactOwner({ candidate, isCurrent: () => hostCurrent() && canCommitBackupRestoreDataEpoch(epoch) }) : undefined;
   try { return await processUnifiedContact({
     now: Date.now, read: readUnifiedContactState, change: work => changeUnifiedContactState(work, epoch), valid,
     readSaved: loadChatSessionMessage,
@@ -504,6 +525,7 @@ async function dispatch(input: {
     isEpochCurrent: operationEpoch => operationEpoch === epoch && canCommitBackupRestoreDataEpoch(epoch),
     releaseRequestBudget: requestToken => releaseUnstartedProactiveBudgetRequest({ connection: input.connection, dataEpoch: epoch, requestToken }),
     generate: async ({ opportunity, retry, beforeRequest, beforeTransport, onTransportStarted, onTransportFinished, onTools }) => {
+      if (phoneLocal && !isPhoneLocalContactOpportunity(opportunity)) throw Error('contact-local-legacy-request-sealed');
       const currentActual = await actualContactState();
       const handoff = buildContactHandoffMaterial(await readUnifiedContactState());
       const waiting = opportunity.materialVersion === 2 && !opportunity.important && !opportunity.phoneEmergency
@@ -740,12 +762,33 @@ async function dispatch(input: {
         } catch { /* Evidence is optional: cache/read failures must preserve the original body failure. */ }
         return error;
       };
-      if (turn.diagnostics.wasTruncated) throw await emptyBody('body_truncated');
-      if (opportunity.phoneEmergency && turn.silent) return { kind: 'silent' };
-      const parsed = parseOrdinaryProactiveLiteResponseWithDiagnostics(turn.assistantText, {
+      if (opportunity.phoneEmergency && turn.silent && !turn.diagnostics.wasTruncated) return { kind: 'silent' };
+      const bodyOptions = {
         allowExternalActionClaims: turn.results.some(result => result.ok) || opportunity.sources.some(source => source.kind === 'web'
           || (source.kind === 'social' && shareMaterials.some(entry => entry.id === source.id && entry.version === source.version
             && entry.externalActionRecorded))),
+      };
+      let recovered = turn.diagnostics.wasTruncated
+        ? recoverCompleteProactiveLiteResponse(turn.assistantText, bodyOptions) : null;
+      if (!turn.assistantText.trim() && turn.protocolFailure?.code === 'INVALID_REPLY_FORMAT'
+        && turn.state.status !== 'cancelled' && !turn.state.cancellation
+        && 'responseObserved' in turn.diagnostics && turn.diagnostics.responseObserved === true && lastRequestToken) {
+        const direct = Object.getOwnPropertyDescriptor(turn.diagnostics, 'fixedEnvelopeRawDirect')?.value;
+        const active = (await readUnifiedContactState()).current;
+        if (typeof direct === 'string' && canCommitBackupRestoreDataEpoch(epoch) && active
+          && active.id === opportunity.id && active.epoch === epoch && active.sessionId === sessionId
+          && active.status === 'requesting' && active.requestToken === lastRequestToken && Date.now() < active.expiresAt) {
+          recovered = recoverCompleteProactiveLiteResponse(direct, bodyOptions);
+        }
+      }
+      if (turn.diagnostics.wasTruncated && !recovered) throw await emptyBody('body_truncated');
+      const parsed = recovered ?? parseOrdinaryProactiveLiteResponseWithDiagnostics(turn.assistantText, bodyOptions);
+      if (parsed.messages.length && (recovered || parsed.reasons.includes('JSON 解析失败，已保留完整正文'))) console.info('[unified-contact-body-recovered]', {
+        opportunityId: opportunity.id, rawMessageCount: parsed.rawMessageCount,
+        keptMessageCount: parsed.keptMessageCount, wasTruncated: turn.diagnostics.wasTruncated,
+        protocolFailureCode: turn.protocolFailure?.code,
+        replyFormatReason: turn.protocolFailure?.replyFormatReason,
+        rawToolCallCount: turn.protocolFailure?.rawToolCallCount,
       });
       if (!parsed.messages.length) {
         // Preserve the Runtime's existing empty-result failure path, with host-only detail.
@@ -818,16 +861,18 @@ async function dispatch(input: {
     waitBetweenBubbles: () => new Promise(resolve => setTimeout(resolve, 320)),
   }, candidate); }
   finally {
+    releaseLocalOwner?.();
     if (activeContactAbort === roundController) activeContactAbort = undefined;
     stopForEpoch(); if (roundTimer) clearTimeout(roundTimer);
     const finished = (await readUnifiedContactState()).current;
-    if (finished?.id === candidate.id && finished.status === 'finished') await control.complete(finished).catch(() => undefined);
+    if (control && finished?.id === candidate.id && finished.status === 'finished') await control.complete(finished).catch(() => undefined);
   }
 }
 
 /** This preflight runs before either the contact scheduler or the life tick's urgent scheduler. */
 export async function prepareUnifiedContactWaitingAffect(supplied?: Parameters<typeof dispatch>[0]): Promise<void> {
   if (Platform.OS !== 'android' || isChatReplyInFlight()) return;
+  if (!await loadPhonePrimaryActivation()) return;
   const epoch = captureBackupRestoreDataEpoch();
   if (epoch === null) return;
   const config = supplied ? undefined : await loadAiConfigPreferencesSnapshot();
@@ -876,7 +921,7 @@ export function runUnifiedContact(input: Parameters<typeof dispatch>[0]): Promis
   })()
     .then(async delivered => {
       const finished = (await readUnifiedContactState()).current;
-      if (finished?.status === 'finished') await getProactiveDeviceControl()?.complete(finished).catch(() => undefined);
+      if (Platform.OS !== 'android' && finished?.status === 'finished') await getProactiveDeviceControl()?.complete(finished).catch(() => undefined);
       // Reuse the existing native check for a deferred preflight, never re-arm a past alarm in a loop.
       if (canCommitBackupRestoreDataEpoch(epoch)) await changeUnifiedContactState(state => {
         state.checkAfterAt = delivered ? undefined : (state.checkAfterAt ?? 0) > Date.now() ? state.checkAfterAt
@@ -907,7 +952,8 @@ export async function checkUnifiedContact(): Promise<number> {
 export async function getNextUnifiedContactAt(now = Date.now()): Promise<number | null> {
   if (Platform.OS !== 'android' && Platform.OS !== 'windows') return null;
   if (contactHostPaused) return null;
-  const shared = getProactiveDeviceControl()?.snapshot();
+  if (Platform.OS === 'android' && !await loadPhonePrimaryActivation()) return null;
+  const shared = Platform.OS === 'android' ? undefined : getProactiveDeviceControl()?.snapshot();
   const local = await readUnifiedContactState(now);
   const state = shared ? withSharedContactLedger(local, shared) : local;
   const checkAfterAt = state.checkAfterAt ?? 0;

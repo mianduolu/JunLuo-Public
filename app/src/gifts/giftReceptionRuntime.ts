@@ -11,13 +11,14 @@ import { prepareGiftReceptionDecision } from './giftReceptionDecision';
 import { understandGiftOriginal } from './giftUnderstanding';
 import { executeGiftWorkOnce } from './giftExecutionOnce';
 import { deferGiftProcessing, listDueGiftVersions, loadGiftProcessingState, loadGiftUnderstandingReceipt,
-  saveGiftUnderstandingReceipt } from './giftProcessingStore';
+  saveGiftUnderstandingReceipt, clearGiftLocalReceptionStart, isGiftLocalWorkStarted,
+  isKnownGiftLocalFailure } from './giftProcessingStore';
 import { emitGiftChanges } from './giftEvents';
 import type { GiftReceptionDecision, GiftRecord, GiftWorkToken } from './giftTypes';
 
 const RETRY_MS = 5 * 60_000;
 type Understanding = Awaited<ReturnType<typeof understandGiftOriginal>>;
-type Pending = { token: GiftWorkToken; stage: string; choice?: GiftReceptionDecision; original?: Understanding };
+type Pending = { token: GiftWorkToken; stage: string; attempt: number; choice?: GiftReceptionDecision; original?: Understanding };
 // Only actual returned results waiting on their local write; never model work.
 const unsaved = new Map<string, Pending>();
 let running: Promise<void> | undefined;
@@ -47,9 +48,18 @@ async function assertCurrent(token: GiftWorkToken, stage: string) {
 
 async function savePending(pending: Pending) {
   const { token, stage } = pending;
-  await assertCurrent(token, stage);
-  if (pending.choice) await recordGiftReceptionDecision(token, pending.choice, Date.now());
+  if (pending.choice) {
+    if (!canCommitBackupRestoreDataEpoch(token.dataEpoch)) throw Error('gift-stale-data-epoch');
+    const current = await loadGift(token.id);
+    const expectedStatus = pending.choice.choice === 'open' ? 'opened' : pending.choice.choice === 'later' ? 'deferred' : 'declined';
+    const actualReceipt = current?.revision === token.revision + 1 && current.receptionDecidedAt != null
+      && current.deliveryStatus === 'delivered' && current.receptionStatus === expectedStatus;
+    if (!actualReceipt) await assertCurrent(token, stage);
+    const saved = actualReceipt ? current! : await recordGiftReceptionDecision(token, pending.choice, Date.now());
+    await clearGiftLocalReceptionStart(token, pending.attempt, saved.revision);
+  }
   else if (pending.original) {
+    await assertCurrent(token, stage);
     const result = await saveGiftUnderstandingReceipt(pending.original);
     if (!result.committed) throw Error('gift-stale-version');
   } else throw Error('gift-invalid-processing-state');
@@ -82,11 +92,14 @@ async function reconcile(token: GiftWorkToken, stage: string, attempt: number): 
 async function runStage(token: GiftWorkToken, stage: string, createdAt: number) {
   const state = await loadGiftProcessingState(token, stage);
   if (state.retryAt > Date.now() || !await requestAllowed(token)) return false;
+  const source = await loadGift(token.id);
+  if (!source || source.revision !== token.revision) return false;
   const attempt = state.lastFailedAttempt + 1;
   const callbacks = {
     reconcileLocally: () => reconcile(token, stage, attempt),
-    executeLocally: async (): Promise<'completed' | 'failed'> => {
+    executeLocally: async (startLocalRequest?: () => Promise<void>): Promise<'completed' | 'failed'> => {
       let retryAt = Date.now() + RETRY_MS;
+      let localStartDenied = false;
       try {
         await assertCurrent(token, stage);
         if (!await requestAllowed(token)) throw Error('gift-request-postponed');
@@ -108,11 +121,12 @@ async function runStage(token: GiftWorkToken, stage: string, createdAt: number) 
             }
             await assertCurrent(token, stage);
             await assertReady?.();
+            try { await startLocalRequest?.(); } catch (error) { localStartDenied = true; throw error; }
           });
-          const pending = reception ? { token, stage, choice: await reception.request(beforeRequest,
-            choice => unsaved.set(keyFor(token, stage), { token, stage, choice })) }
-            : { token, stage, original: await understandGiftOriginal(token, source!.attachment.id, { beforeRequest,
-              onResult: original => unsaved.set(keyFor(token, stage), { token, stage, original }) }) };
+          const pending = reception ? { token, stage, attempt, choice: await reception.request(beforeRequest,
+            choice => unsaved.set(keyFor(token, stage), { token, stage, attempt, choice })) }
+            : { token, stage, attempt, original: await understandGiftOriginal(token, source!.attachment.id, { beforeRequest,
+              onResult: original => unsaved.set(keyFor(token, stage), { token, stage, attempt, original }) }) };
           // The shared budget's own final write can fail after a paid response.
           // Retain it inside the callback, before control returns to that writer.
           unsaved.set(keyFor(token, stage), pending);
@@ -130,13 +144,16 @@ async function runStage(token: GiftWorkToken, stage: string, createdAt: number) 
         return 'completed';
       } catch (error) {
         if (unsaved.has(keyFor(token, stage))) throw error;
+        if (localStartDenied) throw error;
+        if (await isGiftLocalWorkStarted(token, stage, attempt) && !isKnownGiftLocalFailure(error)) throw error;
         if (!stale(error)) await deferGiftProcessing(token, stage, attempt,
           error instanceof Error && /^gift-[a-z-]+$/.test(error.message) ? error.message : 'gift-request-failed', retryAt, true);
         return 'failed';
       }
     },
   };
-  const result = await executeGiftWorkOnce({ giftId: token.id, revision: token.revision, stage, attempt, createdAt }, callbacks);
+  const result = await executeGiftWorkOnce({ giftId: token.id, revision: token.revision, stage, attempt, createdAt,
+    dataEpoch: token.dataEpoch, localSourceCreatedAt: source.createdAt }, callbacks);
   const evidence = result.state === 'completed' ? await reconcile(token, stage, attempt) : null;
   if (result.state !== 'completed' || evidence === null) {
     await deferGiftProcessing(token, stage, attempt, result.state === 'deferred' ? 'gift-online-claim-pending'

@@ -18,6 +18,7 @@ export function isOrdinaryBackupStorageKey(key: string) {
     && !key.startsWith(VOICE_CALL_DIAGNOSTIC_PREFIX)
     && key !== CHAT_REPLY_DRAFT_KEY
     && key !== SLEEP_REPLY_DRAFT_KEY
+    && key !== 'junluo.runtime.phonePrimaryActivation.v1'
     && key !== 'junluo.shiying.notifications.local.v1'
     && key !== 'junluo.shiying.review.local.v1'
     && !isTheaterLocalStorageKey(key);

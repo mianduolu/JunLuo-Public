@@ -1100,6 +1100,20 @@ export function AiSettingsScreen({ navigate, section }: Props) {
     unavailable: '不可判定',
   }[status] ?? status);
 
+  const handleRestoreLatestBadEnvelope = async () => {
+    if (busy || !latestBadEnvelope?.proactiveSource) return;
+    setBusy(true);
+    try {
+      const { restoreProactiveBadEnvelope } = await import('../proactive/proactiveBadEnvelopeRecovery');
+      const result = await restoreProactiveBadEnvelope(latestBadEnvelope);
+      Alert.alert('正文恢复', `已恢复 ${result.savedCount} 条正文，${result.existingCount} 条已经存在。原坏卷仍保留。`);
+    } catch {
+      Alert.alert('正文恢复未完成', '原坏卷仍保留，请核对原聊天和诊断后再处理。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleDeleteLatestBadEnvelope = () => {
     Alert.alert(
       '删除最近坏卷？',
@@ -1627,7 +1641,12 @@ export function AiSettingsScreen({ navigate, section }: Props) {
                   <Text selectable style={styles.behaviorBadEnvelopeRaw}>
                     {latestBadEnvelope.rawDirectContent || '（没有留存原始 direct，不能仅凭这条记录判断供应商是否返回了正文；未保存 reasoning。）'}
                   </Text>
-                  <Pressable onPress={handleDeleteLatestBadEnvelope} style={styles.smallButton}>
+                  {latestBadEnvelope.proactiveSource && latestBadEnvelope.rawDirectContent ? (
+                    <Pressable disabled={busy} onPress={handleRestoreLatestBadEnvelope} style={styles.smallButton}>
+                      <Text style={styles.smallButtonText}>{busy ? '正在恢复正文…' : '恢复正文到原聊天'}</Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable disabled={busy} onPress={handleDeleteLatestBadEnvelope} style={styles.smallButton}>
                     <Text style={styles.smallButtonText}>删除坏卷</Text>
                   </Pressable>
                 </View>

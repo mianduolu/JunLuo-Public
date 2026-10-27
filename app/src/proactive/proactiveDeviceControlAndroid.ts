@@ -12,12 +12,20 @@ import { readUnifiedContactState } from './unifiedContactStore';
 import { createProactiveDeviceUseReporter } from './proactiveDeviceUseReporter';
 import { proactiveMigrationUsed } from './proactiveDeviceControl';
 import { loadSyncEntityHeadMutations } from '../sync/syncMutationStateStore';
+import { ensurePhonePrimaryActivation } from '../runtime/phonePrimaryRuntime';
 
 let reporter: ReturnType<typeof createProactiveDeviceUseReporter> | undefined;
+
+const stopActivatedReporter = async () => {
+  if (!await ensurePhonePrimaryActivation()) return false;
+  reporter?.stop(); reporter = undefined;
+  return true;
+};
 
 /** App and its existing Headless entry share this reader; no new Android service or permission request. */
 export async function ensureAndroidProactiveDeviceControl() {
   if (Platform.OS !== 'android') return;
+  if (await stopActivatedReporter()) return;
   if (!reporter) {
     reporter = createProactiveDeviceUseReporter({
       identity: async () => {
@@ -31,6 +39,8 @@ export async function ensureAndroidProactiveDeviceControl() {
       dataEpoch: captureBackupRestoreDataEpoch,
       sample: readAndroidRecentDeviceUse,
       monotonicNow: getAndroidRecentDeviceUseMonotonicTime,
+      // Reuse the old reporter wakeup only while the one-time real ledger handoff is pending.
+      onState: () => { void stopActivatedReporter(); },
       post: async (action, body) => {
         const enrollment = await loadCurrentSyncRelayEnrollment();
         const baseUrl = await loadGiftExecutionRelayBaseUrl();

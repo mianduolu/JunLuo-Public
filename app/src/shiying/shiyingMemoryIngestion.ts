@@ -145,7 +145,8 @@ export async function restoreShiyingOrganizationMaterial(bindings: readonly Shiy
 export async function prepareShiyingOrganizationMaterials(work: ShiyingOrganizationWork, selectedRecordIds: readonly string[], limit = 6000) {
   assertEpoch(work.dataEpoch);
   const selected = new Set(selectedRecordIds), materials: PreparedShiyingOrganizationMaterial[] = [], blockedSources: string[] = [];
-  let remaining = Math.min(6000, Math.max(0, Math.floor(limit)));
+  const budget = Math.min(6000, Math.max(0, Math.floor(limit)));
+  let remaining = budget;
   for (const pending of work.pendingSources) {
     if (!selected.has(pending.snapshot.recordId)) continue;
     const current = await loadShiyingMemorySnapshot(pending.snapshot.recordId);
@@ -153,9 +154,15 @@ export async function prepareShiyingOrganizationMaterials(work: ShiyingOrganizat
     let prepared: PreparedShiyingOrganizationMaterial;
     if (pending.retry) prepared = await restoreShiyingOrganizationMaterial(pending.retry, work.sessionId);
     else {
-      const fragment = prepareShiyingOrganizationFragment(current, { bodyStart: pending.bodyStart, imageNoteStart: pending.imageNoteStart,
-        references: { body: 'S999998', imageNote: 'S999999' } }, remaining);
-      if (fragment.status !== 'ready') { if (fragment.status === 'blocked') blockedSources.push(current.recordId); continue; }
+      const start = { bodyStart: pending.bodyStart, imageNoteStart: pending.imageNoteStart,
+        references: { body: 'S999998', imageNote: 'S999999' } };
+      const fragment = prepareShiyingOrganizationFragment(current, start, remaining);
+      if (fragment.status !== 'ready') {
+        // A smaller remainder defers this paper; only a full-budget failure is a real blocker.
+        if (fragment.status === 'blocked' && (remaining === budget
+          || prepareShiyingOrganizationFragment(current, start, budget).status === 'blocked')) blockedSources.push(current.recordId);
+        continue;
+      }
       const bindings: ShiyingMemoryBinding[] = [];
       if (fragment.ranges.body) bindings.push(makeShiyingMemoryBinding(current, 'body', fragment.ranges.body));
       if (fragment.ranges.imageNote) bindings.push(makeShiyingMemoryBinding(current, 'image_note', fragment.ranges.imageNote));

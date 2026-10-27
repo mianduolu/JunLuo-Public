@@ -1317,7 +1317,7 @@ export function CameraPerceptionSettingsScreen({ navigate }: Props) {
             <StatusLine label="摄像头待命" value={standbyStateLabel} />
             <StatusLine label="摄像头会话" value={describeSession(session.status)} />
             <StatusLine label="当前主动联系端" value={proactiveContactDeviceLabel(contactControlStatus)} />
-            <StatusLine label="共同主动次数" value={contactControlStatus?.used === null || !contactControlStatus ? '尚未确认' : `${contactControlStatus.used} / 12（北京时间）`} />
+            <StatusLine label={contactControlStatus?.waitReason.startsWith('phone-primary-') ? '手机主动次数' : '共同主动次数'} value={contactControlStatus?.used === null || !contactControlStatus ? '尚未确认' : `${contactControlStatus.used} / 12`} />
             <StatusLine label="操作信号" value={proactiveContactSourceLabel(contactControlStatus)} valueLines={2} />
             <StatusLine label="主动协调" value={proactiveContactWaitLabel(contactControlStatus)} valueLines={2} />
             <StatusLine label="原生最近心跳" value={formatObservationTime(nativeSnapshot?.lastHeartbeatAt)} valueLines={2} />

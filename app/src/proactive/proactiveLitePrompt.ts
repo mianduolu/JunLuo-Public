@@ -78,6 +78,28 @@ export function parseOrdinaryProactiveLiteResponse(content: string) {
   return parseOrdinaryProactiveLiteResponseWithDiagnostics(content).messages;
 }
 
+/** Complete visible structure only; never adopts internal fields or tool calls. */
+export function extractCompleteProactiveLiteMessages(content: string): string[] | null {
+  const visible = extractVisibleReplyFromRaw({
+    raw: content.trim()
+      .replace(/^`+(?:json)?\s*/iu, '')
+      .replace(/\s*`+$/u, ''),
+    allowPlainText: false,
+    expectedStructure: 'single_root_json',
+  });
+  return visible.status === 'visible' ? visible.messages : null;
+}
+
+export function recoverCompleteProactiveLiteResponse(
+  content: string,
+  options: { allowExternalActionClaims?: boolean } = {},
+): ProactiveLiteParseResult | null {
+  const messages = extractCompleteProactiveLiteMessages(content);
+  if (!messages) return null;
+  const result = normalizeProactiveLiteMessagesWithDiagnostics(messages, options);
+  return { ...result.diagnostics, messages: result.messages, rawContentChars: content.length };
+}
+
 export function parseOrdinaryProactiveLiteResponseWithDiagnostics(
   content: string,
   options: { allowExternalActionClaims?: boolean } = {},
@@ -102,6 +124,9 @@ export function parseOrdinaryProactiveLiteResponseWithDiagnostics(
     const result = normalizeProactiveLiteMessagesWithDiagnostics(parsedMessages, options);
     return { ...result.diagnostics, messages: result.messages, rawContentChars: content.length };
   } catch {
+    const recovered = recoverCompleteProactiveLiteResponse(content, options);
+    if (recovered) return { ...recovered, reasons: recovered.reasons.length
+      ? recovered.reasons : ['JSON 解析失败，已保留完整正文'] };
     const parsedMessages = parseAssistantMessageBubbles(content);
     const result = normalizeProactiveLiteMessagesWithDiagnostics(parsedMessages, options);
     return {

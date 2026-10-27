@@ -1,3 +1,4 @@
+import type { PhonePrimaryInternalExecutor } from '../runtime/phonePrimaryInternalExecution';
 import {
   createSyncExecutionOperationId,
 } from '../sync/syncExecutionOperationId';
@@ -30,6 +31,7 @@ export type LifeTickExecutionOncePorts = {
   loadRelayBaseUrl(): Promise<string>;
   reconcileLocally(): Promise<SyncExecutionOutcomeV2 | null>;
   syncEnrollmentReady: boolean;
+  phonePrimaryExecute?: PhonePrimaryInternalExecutor;
 };
 
 export function createLifeTickExecutionIdentity(
@@ -57,7 +59,7 @@ export async function runLifeTickExecutionOnce(
   identity: LifeTickExecutionIdentity,
   ports: LifeTickExecutionOncePorts,
 ): Promise<LifeTickExecutionOnceResult> {
-  if (!ports.syncEnrollmentReady) {
+  if (!ports.syncEnrollmentReady && !ports.phonePrimaryExecute) {
     const existingOutcome = await ports.reconcileLocally();
     const outcome = existingOutcome ?? await ports.executeLocally();
     const completedAt = Date.now();
@@ -69,11 +71,13 @@ export async function runLifeTickExecutionOnce(
     };
   }
 
-  const baseUrl = (await ports.loadRelayBaseUrl()).trim();
-  if (!baseUrl) throw new Error('sync-relay-not-configured');
-  const coordinator = await ports.createCoordinator(baseUrl);
+  const executeOnce = ports.phonePrimaryExecute ?? (async (input) => {
+    const baseUrl = (await ports.loadRelayBaseUrl()).trim();
+    if (!baseUrl) throw new Error('sync-relay-not-configured');
+    return (await ports.createCoordinator(baseUrl)).execute(input);
+  });
   let executedNow = false;
-  const result = await coordinator.execute({
+  const result = await executeOnce({
     operationId: createLifeTickOperationId(identity),
     category: 'life-tick',
     createdAt: identity.bucketStartedAt,

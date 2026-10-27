@@ -5,6 +5,7 @@ import type {
   SyncExecutionOutcomeV2,
 } from '../sync/syncExecutionClaimV2Protocol';
 import type { SyncExecutionOnceCoordinatorV2 } from '../sync/syncExecutionOnceV2Controller';
+import type { PhonePrimaryInternalExecutor } from '../runtime/phonePrimaryInternalExecution';
 
 export type ToolCallExecutionIdentity = {
   callId: string;
@@ -31,6 +32,7 @@ export type ToolCallExecutionOncePorts = {
   loadRelayBaseUrl(): Promise<string>;
   reconcileLocally(): Promise<SyncExecutionOutcomeV2 | null>;
   syncEnrollmentReady: boolean;
+  phonePrimaryExecute?: PhonePrimaryInternalExecutor;
 };
 
 export function createToolCallOperationId(
@@ -51,7 +53,7 @@ export async function runToolCallExecutionOnce(
   if (await ports.hasUnresolvedAttempt?.()) {
     throw new Error('tool-call-needs-reconciliation');
   }
-  if (!ports.syncEnrollmentReady) {
+  if (!ports.syncEnrollmentReady && !ports.phonePrimaryExecute) {
     const existingOutcome = await ports.reconcileLocally();
     const outcome = existingOutcome ?? await ports.executeLocally();
     const completedAt = Date.now();
@@ -63,11 +65,13 @@ export async function runToolCallExecutionOnce(
     };
   }
 
-  const baseUrl = (await ports.loadRelayBaseUrl()).trim();
-  if (!baseUrl) throw new Error('sync-relay-not-configured');
-  const coordinator = await ports.createCoordinator(baseUrl);
+  const executeOnce = ports.phonePrimaryExecute ?? (async (input) => {
+    const baseUrl = (await ports.loadRelayBaseUrl()).trim();
+    if (!baseUrl) throw new Error('sync-relay-not-configured');
+    return (await ports.createCoordinator(baseUrl)).execute(input);
+  });
   let executedNow = false;
-  const result = await coordinator.execute({
+  const result = await executeOnce({
     operationId: createToolCallOperationId(identity),
     category: 'tool-call',
     createdAt: identity.createdAt,

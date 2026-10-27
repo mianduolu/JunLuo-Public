@@ -1,3 +1,4 @@
+import type { PhonePrimaryInternalExecutor } from '../runtime/phonePrimaryInternalExecution';
 import {
   createSyncExecutionOperationId,
 } from '../sync/syncExecutionOperationId';
@@ -37,6 +38,7 @@ export type ScheduleOccurrenceCompletionOncePorts = {
   ): Promise<ScheduleOccurrenceCompletionState | null>;
   loadRelayBaseUrl(): Promise<string>;
   syncEnrollmentReady: boolean;
+  phonePrimaryExecute?: PhonePrimaryInternalExecutor;
 };
 
 export async function runScheduleOccurrenceCompletionOnce(
@@ -60,7 +62,7 @@ export async function runScheduleOccurrenceCompletionOnce(
     return current;
   };
 
-  if (!ports.syncEnrollmentReady) {
+  if (!ports.syncEnrollmentReady && !ports.phonePrimaryExecute) {
     const local = await ports.completeLocally(occurrenceId, round);
     if ((await loadCurrent()).status !== 'completed') {
       throw new Error('schedule-completion-needs-reconciliation');
@@ -70,12 +72,13 @@ export async function runScheduleOccurrenceCompletionOnce(
 
   const createdAt = await ports.loadItemCreatedAt(occurrence.itemId);
   if (createdAt === null) throw new Error('schedule-item-not-found');
-  const baseUrl = (await ports.loadRelayBaseUrl()).trim();
-  if (!baseUrl) throw new Error('sync-relay-not-configured');
-
-  const coordinator = await ports.createCoordinator(baseUrl);
+  const executeOnce = ports.phonePrimaryExecute ?? (async (input) => {
+    const baseUrl = (await ports.loadRelayBaseUrl()).trim();
+    if (!baseUrl) throw new Error('sync-relay-not-configured');
+    return (await ports.createCoordinator(baseUrl)).execute(input);
+  });
   let localResult: { changed: boolean; notificationIds: string[] } | null = null;
-  const result = await coordinator.execute({
+  const result = await executeOnce({
     operationId: createSyncExecutionOperationId({
       category: 'reminder',
       scope: 'schedule.occurrence',

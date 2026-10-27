@@ -99,6 +99,24 @@ import type { MemoryIngestionBatchInput } from './memoryIngestionLedger';
 const MANUAL_DIGEST_BATCH_SIZE = 30;
 const PROACTIVE_DIGEST_BATCH_SIZE = MANUAL_DIGEST_BATCH_SIZE;
 const PROACTIVE_MEMORY_SUGGESTION_COOLDOWN_MS = 8 * 60 * 1000;
+const SHIYING_BLOCKED_NOTICE = '拾荧纸条材料过长且没有可用分界，暂未整理，原文和进度保留。';
+// Process-local: leaving/re-entering chat must not repeat the same automatic warning.
+let shiyingBlockedNoticeEpoch: number | null | undefined;
+const shownShiyingBlockers = new Map<string, string>();
+function shouldShowShiyingBlockedNotice(work: ShiyingOrganizationWork, blockedIds: readonly string[]) {
+  if (shiyingBlockedNoticeEpoch !== work.dataEpoch) {
+    shownShiyingBlockers.clear(); shiyingBlockedNoticeEpoch = work.dataEpoch;
+  }
+  const pendingIds = new Set(work.pendingSources.map(value => value.snapshot.recordId));
+  for (const id of shownShiyingBlockers.keys()) if (!pendingIds.has(id)) shownShiyingBlockers.delete(id);
+  const blocked = new Set(blockedIds);
+  const versions = work.pendingSources.filter(value => blocked.has(value.snapshot.recordId)).map(value => ({
+    id: value.snapshot.recordId, version: JSON.stringify([value.snapshot.materialHash, value.bodyStart, value.imageNoteStart]),
+  }));
+  if (!versions.some(value => shownShiyingBlockers.get(value.id) !== value.version)) return false;
+  for (const value of versions) shownShiyingBlockers.set(value.id, value.version);
+  return true;
+}
 const EPISODE_MEMORY_MIN_MESSAGES = 12;
 const EPISODE_MEMORY_MIN_USER_CHARS = 260;
 const FAST_REPLY_PATTERN =
@@ -243,10 +261,11 @@ async function prepareMixedSourceBatch(chat: SubjectiveMessage[],
     lifeSelfDeferredCount: selfMaterials.some(material => material.source.kind === 'exploration')
       ? initial.lifeSelfWork.filter(value => value.countAsNew).length - selected.lifeSelfWork.filter(value => value.countAsNew).length : 0,
     shiying: paper.materials.filter(material => selected.shiyingWork.some(value => value.recordId === material.snapshot.recordId)),
+    blockedShiyingSources: paper.blockedSources,
     readingNotice: prepared.blockedSources.length ? '阅读材料过长且没有可用分界，暂未整理，原文和进度保留。'
       : reading.unavailableSources.length ? '阅读原件或对应原卡需要核对，未处理的材料仍保留。'
         : reading.blockedActivities.length ? '这场阅读还有待确认稿，后续材料已保留。'
-          : paper.blockedSources.length ? '拾荧纸条材料过长且没有可用分界，暂未整理，原文和进度保留。'
+          : paper.blockedSources.length ? SHIYING_BLOCKED_NOTICE
             : shiying?.unavailableSources.length ? '拾荧原件或对应原卡需要核对，未处理的材料仍保留。'
               : shiying?.blockedRecords.length ? '这张拾荧纸条还有待确认稿，后续材料已保留。' : undefined };
 }
@@ -1151,7 +1170,10 @@ export function createChatMemoryController({
       if (nextLetter.blockedSentence) showTransientMemoryNotice('信件单句过长，暂未整理', 4200);
       const selected = await prepareMixedSourceBatch(newMessages, preparedObservations, preparedReadings,
         PROACTIVE_DIGEST_BATCH_SIZE - (letter ? 1 : 0), preparedShiying, preparedLifeSelf, sessionId);
-      if (selected.readingNotice) showTransientMemoryNotice(selected.readingNotice, 4200);
+      if (selected.readingNotice && (selected.readingNotice !== SHIYING_BLOCKED_NOTICE
+        || shouldShowShiyingBlockedNotice(preparedShiying, selected.blockedShiyingSources))) {
+        showTransientMemoryNotice(selected.readingNotice, 4200);
+      }
       let reviewedMessages = selected.messages;
       let observations = selected.observations;
       let observationWork = selected.work;

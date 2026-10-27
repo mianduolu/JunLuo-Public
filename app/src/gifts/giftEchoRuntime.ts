@@ -7,7 +7,8 @@ import { loadAndroidSyncNetworkClass } from '../sync/syncAndroidNetworkClass';
 import { captureGiftWork, listGiftViews } from './giftStore';
 import { adoptGiftUnderstandingEchoes, commitGiftEchoReply, listPendingGiftEchoVersions, loadGiftEchoThread } from './giftEchoStore';
 import { loadGiftEchoReadSelection, saveGiftEchoReadSelection } from './giftEchoReadStore';
-import { deferGiftProcessing, loadGiftProcessingState } from './giftProcessingStore';
+import { deferGiftProcessing, loadGiftProcessingState, isGiftLocalWorkStarted,
+  isKnownGiftLocalFailure } from './giftProcessingStore';
 import { executeGiftWorkOnce } from './giftExecutionOnce';
 import { giftEchoReviewApproved, prepareGiftEchoCall, type GiftEchoModelResult } from './giftEchoModel';
 import { emitGiftChanges } from './giftEvents';
@@ -78,10 +79,12 @@ async function runStage(token: GiftWorkToken, message: GiftEcho, manual: boolean
   const state = await loadGiftProcessingState(token, stage);
   if ((!manual && state.retryAt > Date.now()) || !await allowed(token, manual)) return false;
   const attempt = state.lastFailedAttempt + 1;
-  const result = await executeGiftWorkOnce({ giftId: token.id, revision: token.revision, stage, attempt, createdAt: message.createdAt }, {
+  const result = await executeGiftWorkOnce({ giftId: token.id, revision: token.revision, stage, attempt, createdAt: message.createdAt,
+    dataEpoch: token.dataEpoch, localSourceCreatedAt: message.createdAt }, {
     reconcileLocally: () => evidence(token, message.id, stage, attempt),
-    executeLocally: async () => {
+    executeLocally: async (startLocalRequest?: () => Promise<void>) => {
       let retryAt = Date.now() + RETRY_MS;
+      let localStartDenied = false;
       try {
         const prepared = await prepareGiftEchoCall(token, message.id, read);
         const budget = await runBudgetedAiCall(prepared.budgetKind, manual ? 'normal' : 'background', async admission => {
@@ -92,6 +95,7 @@ async function runStage(token: GiftWorkToken, message: GiftEcho, manual: boolean
             const current = await threadFor(token);
             if (!current.pendingYouIds.includes(message.id)) throw Error('gift-echo-target-missing');
             await assertReady?.();
+            try { await startLocalRequest?.(); } catch (error) { localStartDenied = true; throw error; }
           }), returned);
           returned(value); return value;
         }, { connection: prepared.connection, dataEpoch: token.dataEpoch, purpose: manual ? 'manual-chat' : 'other' });
@@ -103,6 +107,8 @@ async function runStage(token: GiftWorkToken, message: GiftEcho, manual: boolean
         return 'completed';
       } catch (error) {
         if (unsaved.has(workKey(token, message.id))) throw error;
+        if (localStartDenied) throw error;
+        if (await isGiftLocalWorkStarted(token, stage, attempt) && !isKnownGiftLocalFailure(error)) throw error;
         if (!isStale(error)) await deferGiftProcessing(token, stage, attempt,
           error instanceof Error && /^gift-[a-z-]+$/.test(error.message) ? error.message : 'gift-echo-request-failed', retryAt, true);
         return 'failed';

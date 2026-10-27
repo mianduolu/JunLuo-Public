@@ -7,6 +7,57 @@ import {
 import type { ContactToolReceipt, StoredUnifiedContactState } from './unifiedContactStore';
 import { recordPhoneEmergencyHandled } from './phoneEmergencyContact';
 
+const PHONE_LOCAL_ORDINARY_PREFIX = 'unified-contact:ordinary:phone-local:';
+const PHONE_LOCAL_PRIORITY_PREFIX = 'unified-contact:phone-local:';
+export const PHONE_LOCAL_CONTACT_ROUND_MS = 30 * 60_000;
+
+export function phoneLocalContactId(sessionId: string, now: number, ordinary: boolean) {
+  return `${ordinary ? PHONE_LOCAL_ORDINARY_PREFIX : PHONE_LOCAL_PRIORITY_PREFIX}${sessionId}:${now}`;
+}
+
+export function isPhoneLocalContactOpportunity(op: Pick<ContactOpportunity, 'id' | 'sessionId'>) {
+  return [PHONE_LOCAL_ORDINARY_PREFIX, PHONE_LOCAL_PRIORITY_PREFIX].some(prefix => {
+    const start = `${prefix}${op.sessionId}:`;
+    return op.id.startsWith(start) && /^\d+$/.test(op.id.slice(start.length));
+  });
+}
+
+type PhoneLocalContactOwner = { candidate: ContactOpportunity; isCurrent(): boolean };
+let phoneLocalOwner: PhoneLocalContactOwner | undefined;
+
+/** The actual dispatcher candidate, before budget admission; never a synthetic server reservation. */
+export function bindPhoneLocalContactOwner(owner: PhoneLocalContactOwner) {
+  phoneLocalOwner = owner;
+  return () => { if (phoneLocalOwner === owner) phoneLocalOwner = undefined; };
+}
+
+export function readPhoneLocalContactOwner(input: { id: string; sessionId?: string; epoch: number }, now = Date.now()) {
+  const owner = phoneLocalOwner, op = owner?.candidate;
+  return owner && op && owner.isCurrent() && isPhoneLocalContactOpportunity(op)
+    && op.id === input.id && op.epoch === input.epoch && (!input.sessionId || op.sessionId === input.sessionId)
+    && now < op.expiresAt ? op : undefined;
+}
+
+/** Retire the old shared request, retaining paid text for the original local saving path. */
+export function prepareSharedContactForPhoneLocal(state: StoredUnifiedContactState, now: number) {
+  const op = state.current;
+  if (!op || op.status === 'finished' || isPhoneLocalContactOpportunity(op)) return false;
+  if (op.messages.length) {
+    const changed = op.requestUndo !== undefined || !['saving', 'handoff'].includes(op.status);
+    op.requestUndo = undefined; // Never refund a shared/unknown transport during this handoff.
+    if (op.status !== 'handoff') op.status = 'saving';
+    return changed;
+  }
+  const attempted = op.requests > 0 || op.savedMessageIds.length > 0 || ['started', 'unknown'].includes(op.transportState ?? '');
+  if (attempted) finishContactOpportunity(state, now, 'shared_request_sealed_for_phone');
+  else {
+    // A reservation that never sent a request has no new cooldown and consumes no new slot.
+    op.status = 'finished'; op.reason = 'shared_reservation_sealed_for_phone'; op.endedAt = now; op.retryAt = null;
+  }
+  op.requestUndo = undefined;
+  return true;
+}
+
 export type UnifiedContactPorts = {
   now(): number;
   read(): Promise<StoredUnifiedContactState>;

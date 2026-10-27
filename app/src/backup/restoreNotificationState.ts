@@ -130,6 +130,8 @@ export async function healPendingNotificationProjectionIfPermitted() {
 }
 
 export async function reconcileRestoredNotificationState() {
+  const { clearPhonePrimaryActivation } = await import('../runtime/phonePrimaryRuntime');
+  await clearPhonePrimaryActivation();
   const { resetShiyingNotificationsAfterRestore } = await import('../shiying/shiyingNotifications');
   const { resetSleepOpportunitiesAfterRestore } = await import('../life/sleepPlanRuntime');
   await resetSleepOpportunitiesAfterRestore();

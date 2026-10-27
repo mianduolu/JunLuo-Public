@@ -1,3 +1,4 @@
+import type { PhonePrimaryInternalExecutor } from '../runtime/phonePrimaryInternalExecution';
 import {
   createSyncExecutionOperationId,
 } from '../sync/syncExecutionOperationId';
@@ -12,6 +13,7 @@ type TodoCompletionState = {
 
 export type TodoCompletionOncePorts<T extends TodoCompletionState> = {
   syncEnrollmentReady: boolean;
+  phonePrimaryExecute?: PhonePrimaryInternalExecutor;
   loadTodo(todoId: string): Promise<T | null>;
   completeLocally(todoId: string, expectedRound: number): Promise<T | null>;
   loadRelayBaseUrl(): Promise<string>;
@@ -36,16 +38,18 @@ export async function runTodoCompletionOnce<T extends TodoCompletionState>(
     }
     return current;
   };
-  if (!ports.syncEnrollmentReady) {
+  if (!ports.syncEnrollmentReady && !ports.phonePrimaryExecute) {
     await ports.completeLocally(todoId, round);
     const current = await loadCurrent();
     if (current.status !== 'completed') throw new Error('todo-completion-needs-reconciliation');
     return current;
   }
-  const baseUrl = (await ports.loadRelayBaseUrl()).trim();
-  if (!baseUrl) throw new Error('sync-relay-not-configured');
-  const coordinator = await ports.createCoordinator(baseUrl);
-  const result = await coordinator.execute({
+  const executeOnce = ports.phonePrimaryExecute ?? (async (input) => {
+    const baseUrl = (await ports.loadRelayBaseUrl()).trim();
+    if (!baseUrl) throw new Error('sync-relay-not-configured');
+    return (await ports.createCoordinator(baseUrl)).execute(input);
+  });
+  const result = await executeOnce({
     operationId: createSyncExecutionOperationId({
       category: 'reminder',
       scope: 'todo.item',

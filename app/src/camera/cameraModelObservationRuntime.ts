@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
 import { loadAiConfigPreferencesSnapshot } from '../ai/AiConfigPreferences';
 import { canAffordCameraObservation, beginCameraVisionBudgetRequest } from '../ai/aiCallBudget';
 import type { AiConnection } from '../ai/types';
@@ -19,6 +20,11 @@ import { cameraLookOnceTool } from '../tools/builtin/cameraObservationTools';
 import { attachCameraObservationResponseContext } from './cameraEvidenceFusion';
 import { cameraCaptureConditionFailure } from './cameraRuntimeConditions';
 import { getProactiveDeviceControl } from '../proactive/proactiveDeviceControl';
+import { readPhoneLocalContactOwner, isPhoneLocalContactOpportunity } from '../proactive/unifiedContactRuntime';
+import { readUnifiedContactState } from '../proactive/unifiedContactStore';
+import { loadPhonePrimaryActivation } from '../runtime/phonePrimaryRuntime';
+import { loadAutomaticRemoteAiPolicy, isAutomaticRemoteAiAllowed } from '../runtime/automaticRemoteAiPolicy';
+import { readAndroidRecentDeviceUse } from '../backend/recentDeviceUseNative';
 
 let observationInFlight = false;
 
@@ -49,9 +55,25 @@ export async function prepareCameraModelObservationHost(input: {
   if (!cameraPerceptionNative.available || observationInFlight || input.signal?.aborted
     || !canCommitBackupRestoreDataEpoch(input.dataEpoch)) return;
   try {
-    const contactControl = input.entry === 'proactive_contact' ? getProactiveDeviceControl() : undefined;
-    if (input.entry === 'proactive_contact' && (!contactControl || !await contactControl.camera(input.sourceMessageId))) return;
+    const phoneLocal = input.entry === 'proactive_contact' && Platform.OS === 'android' && !!await loadPhonePrimaryActivation();
+    const localOwnerInput = { id: input.sourceMessageId, sessionId: input.sourceSessionId, epoch: input.dataEpoch };
+    if (input.entry === 'proactive_contact' && Platform.OS === 'android' && !phoneLocal) return;
+    const contactControl = input.entry === 'proactive_contact' && !phoneLocal ? getProactiveDeviceControl() : undefined;
+    if (input.entry === 'proactive_contact' && (phoneLocal ? !readPhoneLocalContactOwner(localOwnerInput)
+      || (await readAndroidRecentDeviceUse()).sampleStatus !== 'ready'
+      : !contactControl || !await contactControl.camera(input.sourceMessageId))) return;
     const sharedAnchors = contactControl?.anchors();
+    const localNewFrameReady = async () => {
+      if (!await loadPhonePrimaryActivation() || !readPhoneLocalContactOwner(localOwnerInput)
+        || (await readAndroidRecentDeviceUse()).sampleStatus !== 'ready') return false;
+      const [state, policy, settings] = await Promise.all([readUnifiedContactState(),
+        loadAutomaticRemoteAiPolicy({ strict: true }),
+        import('../proactive/proactiveMessages').then(module => module.loadProactiveMessageSettings({ strict: true }))]);
+      const op = state.current;
+      return !!op && isPhoneLocalContactOpportunity(op) && op.id === input.sourceMessageId
+        && op.sessionId === input.sourceSessionId && op.epoch === input.dataEpoch && op.status === 'requesting'
+        && Date.now() < op.expiresAt && settings.enabled && isAutomaticRemoteAiAllowed(policy);
+    };
     const [settings, snapshot, permission, toolPermission] = await Promise.all([
       loadCameraPerceptionSettings({ strict: true }), cameraPerceptionNative.getState(), cameraPerceptionNative.getPrerequisites(),
       resolveToolPermissionForCall(cameraLookOnceTool, { input: {} }),
@@ -113,8 +135,9 @@ export async function prepareCameraModelObservationHost(input: {
                 && current.networkAvailable && permissions.cameraPermissionGranted && permissions.notificationPermissionGranted
                 && permissions.notificationChannelVisible && !isQuiet(latestSettings, Date.now())
                 && (!requiresNewFrame || !cameraCaptureConditionFailure(permissions.runtimeConditions, 'model'))
-                && (!requiresNewFrame || !contactControl || await contactControl.camera(input.sourceMessageId, true,
-                  latestSettings.minimumIntervalMinutes * 60_000));
+                && (!requiresNewFrame || (phoneLocal ? await localNewFrameReady()
+                  : !contactControl || await contactControl.camera(input.sourceMessageId, true,
+                    latestSettings.minimumIntervalMinutes * 60_000)));
             },
             snapshot: () => cameraPerceptionNative.getState(),
             subscribe: listener => {
