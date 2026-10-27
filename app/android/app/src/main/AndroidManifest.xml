@@ -122,6 +122,12 @@
         <category android:name="android.intent.category.LAUNCHER"/>
       </intent-filter>
     </activity>
+    <activity android:name=".JunLuoStartupCheckActivity" android:label="君落检查" android:process=":junluo_startup_check" android:taskAffinity="${applicationId}.startupCheck" android:launchMode="singleTask" android:exported="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+      <intent-filter android:priority="-1">
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+    </activity>
     <activity android:excludeFromRecents="true" android:exported="false" android:theme="@style/AppTheme" android:name=".camera.JunLuoCameraManualSavePickerActivity"/>
     <activity android:name=".PhoneRestrictionActivity" android:exported="false" android:excludeFromRecents="true" android:launchMode="singleTask" android:taskAffinity="${applicationId}.phoneRestriction" android:showWhenLocked="true" android:screenOrientation="portrait" android:theme="@style/JunLuoPhoneRestrictionTheme"/>
     <receiver android:name=".PhoneRestrictionEmergencyReceiver" android:exported="false"/>

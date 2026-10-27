@@ -15,6 +15,7 @@ import com.anonymous.junluo.sleep.JunLuoSleepSchedulePackage
 import com.anonymous.junluo.chat.JunLuoChatReplyBackgroundPackage
 
 import android.app.Application
+import android.content.Context
 import android.content.res.Configuration
 
 import com.facebook.react.PackageList
@@ -33,7 +34,14 @@ import kotlin.concurrent.thread
 
 class MainApplication : Application(), ReactApplication {
 
-  override val reactNativeHost: ReactNativeHost = ReactNativeHostWrapper(
+  private val startupCheckProcess = JunLuoStartupDiagnostics.isCheckProcess()
+  // Preserve eager host construction in the normal process, before attach/providers.
+  private val mainHost: ReactNativeHost? = if (startupCheckProcess) null else createMainHost()
+
+  override val reactNativeHost: ReactNativeHost
+    get() = checkNotNull(mainHost) { "React Native is unavailable in the startup check process" }
+
+  private fun createMainHost(): ReactNativeHost = ReactNativeHostWrapper(
       this,
       object : DefaultReactNativeHost(this) {
         override fun getPackages(): List<ReactPackage> =
@@ -71,8 +79,15 @@ class MainApplication : Application(), ReactApplication {
   override val reactHost: ReactHost
     get() = ReactNativeHostWrapper.createReactHost(applicationContext, reactNativeHost)
 
+  override fun attachBaseContext(base: Context) {
+    super.attachBaseContext(base)
+    if (!startupCheckProcess) JunLuoStartupDiagnostics.install(this)
+  }
+
   override fun onCreate() {
     super.onCreate()
+    if (startupCheckProcess) return
+    JunLuoStartupDiagnostics.stage("application_create")
     thread(name = "JunLuoBackupCleanup", isDaemon = true) {
       runCatching { JunLuoBackupArchiveModule.cleanupStaleBackupCache(cacheDir) }
     }
@@ -81,12 +96,15 @@ class MainApplication : Application(), ReactApplication {
     } catch (e: IllegalArgumentException) {
       ReleaseLevel.STABLE
     }
+    JunLuoStartupDiagnostics.stage("rn_load_begin")
     loadReactNative(this)
+    JunLuoStartupDiagnostics.stage("expo_lifecycle_begin")
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
+    JunLuoStartupDiagnostics.stage("expo_lifecycle_end")
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {
     super.onConfigurationChanged(newConfig)
-    ApplicationLifecycleDispatcher.onConfigurationChanged(this, newConfig)
+    if (!startupCheckProcess) ApplicationLifecycleDispatcher.onConfigurationChanged(this, newConfig)
   }
 }
