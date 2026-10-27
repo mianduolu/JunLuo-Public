@@ -15,14 +15,20 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Arrays;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** One bounded technical snapshot. Only the normal app process writes it. */
 public final class JunLuoStartupDiagnostics {
   static final String PROCESS_SUFFIX = ":junluo_startup_check";
   static final int MAX_BYTES = 16384;
   private static final String FILE_NAME = "junluo-startup-check.json";
+  private static final Pattern JS_POSITION = Pattern.compile(
+      "(?:(?:\\d{1,10}\\.js|seg-\\d{1,10}(?:_\\d{1,10})?\\.js):)?([1-9]\\d{0,9}):(0|[1-9]\\d{0,9})");
   private static AtomicFile output;
   private static JSONObject current;
 
@@ -143,12 +149,44 @@ public final class JunLuoStartupDiagnostics {
       for (int i = 0; i < Math.min(8, frames.length); i++) {
         result.append("  at ").append(limit(frames[i].toString(), 160)).append('\n');
       }
+      if ("com.facebook.react.common.JavascriptException".equals(next.getClass().getName())) {
+        // Read the RN-formatted value only in RAM; retain numeric positions, never its text.
+        String positions = jsPositions(next.getMessage());
+        result.append("候选 JS 位置（不含函数名或错误正文）：\n")
+            .append(positions.isEmpty() ? "未取得\n" : positions);
+      }
       Throwable causeError = next.getCause();
       if (causeError == next) break;
       next = causeError;
     }
-    // No Throwable.toString/getMessage: RN may put conversation text in a JS error message.
+    // No Throwable.toString or retained message: RN may include conversation text there.
     return result.toString();
+  }
+
+  static String jsPositions(String formatted) {
+    if (formatted == null) return "";
+    String marker = ", stack:\n";
+    int boundary = formatted.lastIndexOf(marker);
+    if (boundary < 0 || formatted.length() - boundary > 32768) return "";
+    StringBuilder positions = new StringBuilder();
+    int cursor = boundary + marker.length();
+    int accepted = 0;
+    for (int scanned = 0; cursor < formatted.length() && scanned < 64 && accepted < 8; scanned++) {
+      int end = formatted.indexOf('\n', cursor);
+      if (end < 0) break;
+      int separator = formatted.lastIndexOf('@', end - 1);
+      if (end - cursor <= 1024 && separator >= cursor && end - separator <= 80) {
+        String candidate = formatted.substring(separator + 1, end);
+        Matcher match = JS_POSITION.matcher(candidate);
+        if (match.matches() && Long.parseLong(match.group(1)) <= Integer.MAX_VALUE
+            && Long.parseLong(match.group(2)) <= Integer.MAX_VALUE) {
+          positions.append("  JS ").append(candidate).append('\n');
+          accepted++;
+        }
+      }
+      cursor = end + 1;
+    }
+    return positions.toString();
   }
 
   private static String limit(String value, int length) {
@@ -187,6 +225,18 @@ public final class JunLuoStartupDiagnostics {
     text.append("包名：").append(context.getPackageName()).append('\n');
     text.append("版本：").append(BuildConfig.VERSION_NAME).append(" / ")
         .append(BuildConfig.VERSION_CODE).append('\n');
+    text.append("诊断修订：JS位置 r2\n");
+    try (InputStream input = context.getAssets().open("index.android.bundle")) {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] buffer = new byte[16384];
+      int count;
+      while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count);
+      StringBuilder hash = new StringBuilder();
+      for (byte value : digest.digest()) hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+      text.append("当前安装包程序指纹：").append(hash).append('\n');
+    } catch (Exception | LinkageError error) {
+      text.append("程序指纹暂不可用：").append(error.getClass().getSimpleName()).append('\n');
+    }
     text.append("Android 接口版本：").append(Build.VERSION.SDK_INT).append('\n');
     text.append("系统提供的 ABI：").append(Arrays.toString(Build.SUPPORTED_ABIS)).append('\n');
     String name = processName();
@@ -214,6 +264,7 @@ public final class JunLuoStartupDiagnostics {
     text.append("\n系统退出信息：\n");
     appendExit(context, record, text);
     text.append("\n阶段仅表示原生事件，不代表 JS／首页已就绪。\n")
+        .append("程序指纹属于当前安装包，不能直接对应更新前的异常记录。\n")
         .append("不收集聊天、密钥或异常正文，不自动上传。\n")
         .append("native signal、兼容环境退出及过早故障可能无法记录。\n");
     return text.toString();

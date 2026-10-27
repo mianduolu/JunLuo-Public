@@ -84,4 +84,50 @@ public class JunLuoStartupDiagnosticsTest {
     return new JSONObject().put("pid", 123).put("startedAt", 1000)
         .put("updatedAt", 1001).put("stage", stage);
   }
+
+  @Test public void rnJsFatalRetainsPositionsButNoErrorTextOrFunctionNames() {
+    com.facebook.react.common.JavascriptException error = new com.facebook.react.common.JavascriptException(
+        "SECRET_CHAT TypeError, stack:\nSECRET_FUNCTION@1:123456\n");
+    String text = JunLuoStartupDiagnostics.exceptionFrames(error);
+    assertTrue(text.contains("JS 1:123456"));
+    assertFalse(text.contains("SECRET_CHAT"));
+    assertFalse(text.contains("SECRET_FUNCTION"));
+    assertFalse(text.contains("TypeError"));
+  }
+
+  @Test public void numericRamAndSegmentCoordinatesKeepZeroBasedColumns() {
+    assertEquals("  JS 1:123456\n  JS seg-1_2.js:1:42\n  JS 17.js:10:0\n",
+        JunLuoStartupDiagnostics.jsPositions("secret, stack:\na@1:123456\nb@seg-1_2.js:1:42\nc@17.js:10:0\n"));
+  }
+
+  @Test public void lastRnBoundaryExcludesBodyImitatingFrames() {
+    assertEquals("  JS 1:42\n", JunLuoStartupDiagnostics.jsPositions(
+        "secret fake@1:999\n, stack:\na@1:42\n"));
+    assertEquals("", JunLuoStartupDiagnostics.jsPositions("secret, stack:\nfake@1:999\n, stack:\n"));
+  }
+
+  @Test public void invalidPrivateOrMissingCoordinatesAreNotRetained() {
+    assertEquals("", JunLuoStartupDiagnostics.jsPositions("secret, stack:\n"
+        + "a@https://private.example/key:1:42\nb@-1\nc@1\nd@1:2147483648\n"
+        + "e@0:123\nf@2147483648:1\ng@1:2SECRET_KEY\n"));
+    assertEquals("", JunLuoStartupDiagnostics.jsPositions("secret a@1:2\n"));
+    assertEquals("", JunLuoStartupDiagnostics.jsPositions(null));
+    assertEquals("", JunLuoStartupDiagnostics.jsPositions("secret, stack:\na@1:2"));
+  }
+
+  @Test public void boundedJsExtractionRejectsOversizedSuffixAndLimitsFrames() {
+    StringBuilder many = new StringBuilder("secret, stack:\n");
+    for (int i = 0; i < 100; i++) many.append("a@1:42\n");
+    String text = JunLuoStartupDiagnostics.jsPositions(many.toString());
+    assertEquals(8, text.split("JS ", -1).length - 1);
+    String huge = new String(new char[33000]).replace('\0', 'x');
+    assertEquals("", JunLuoStartupDiagnostics.jsPositions("secret, stack:\n" + huge + "@1:2\n"));
+    assertEquals("  JS 1:2\n", JunLuoStartupDiagnostics.jsPositions(huge + ", stack:\na@1:2\n"));
+  }
+
+  @Test public void genericExceptionCannotOptIntoJsExtractionByMessage() {
+    String text = JunLuoStartupDiagnostics.exceptionFrames(new RuntimeException("secret, stack:\na@1:42\n"));
+    assertFalse(text.contains("JS 1:42"));
+    assertFalse(text.contains("secret"));
+  }
 }
