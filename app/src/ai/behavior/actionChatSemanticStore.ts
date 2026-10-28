@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { normalizeChatProviderRequestId, normalizeChatTransportErrorCode, normalizeChatTransportErrorName } from '../chatCompletionTransport';
+import { normalizeChatProviderHost, normalizeChatProviderRequestId, normalizeChatTransportErrorCode, normalizeChatTransportErrorName } from '../chatCompletionTransport';
 import type { JunLuoReminderActionIssue } from '../../tools/toolAgentLoop';
 import type { BaiyunFixedEnvelopeRootFailure, BaiyunFixedEnvelopeJsonParseIssue } from './actionChatFixedEnvelope';
 import type { MemoryRecallPreparationDiagnostic, MemoryRecallStageDiagnostic } from '../../memory/memoryChatPreparation';
@@ -80,6 +80,7 @@ export type BaiyunChatModelAttemptDiagnostic = {
   causeCode?: string;
   externalAborted?: boolean;
   providerRequestId?: string;
+  providerHost?: string;
   firstContentAt?: number;
   responseCompletedAt?: number;
   finishedAt?: number;
@@ -388,7 +389,8 @@ export function normalizeChatMemoryPreparation(value: unknown): MemoryRecallPrep
     'network_error', 'index_unavailable', 'configuration_changed', 'read_failed', 'deadline_exceeded',
     'background_only', 'route_unavailable', 'route_fallback', 'database_busy', 'response_payload_invalid', 'response_empty',
     'response_reasoning_only', 'response_truncated', 'route_json_missing', 'route_json_invalid', 'route_shape_invalid',
-    'post_database_busy', 'post_read_failed', 'focus_database_busy', 'focus_read_failed'];
+    'post_database_busy', 'post_read_failed', 'focus_database_busy', 'focus_read_failed',
+    'shiying_source_unavailable', 'shiying_read_failed'];
   const reason = (input: unknown) => typeof input === 'string' && reasons.includes(input) ? input : undefined;
   const stage = (input: unknown): MemoryRecallStageDiagnostic => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return { status: 'not_started' };
@@ -400,7 +402,10 @@ export function normalizeChatMemoryPreparation(value: unknown): MemoryRecallPrep
       const elapsedMs = nonnegativeNumber(measurement.elapsedMs);
       const count = nonnegativeNumber(measurement.count), active = nonnegativeNumber(measurement.active);
       if (elapsedMs !== undefined && count !== undefined && active !== undefined) {
-        work[phase] = { elapsedMs, count: Math.trunc(count), active: Math.min(Math.trunc(active), Math.trunc(count)) };
+        const httpStatus = measurement.httpStatus;
+        work[phase] = { elapsedMs, count: Math.trunc(count), active: Math.min(Math.trunc(active), Math.trunc(count)),
+          ...(phase === 'embedding_http' && Number.isInteger(httpStatus) && httpStatus! >= 100 && httpStatus! <= 599
+            ? { httpStatus } : {}) };
       }
     }
     return {
@@ -494,6 +499,7 @@ function normalizeModelAttemptDiagnostic(
     causeCode: normalizeChatTransportErrorCode(candidate.causeCode),
     externalAborted: typeof candidate.externalAborted === 'boolean' ? candidate.externalAborted : undefined,
     providerRequestId: normalizeChatProviderRequestId(candidate.providerRequestId),
+    providerHost: normalizeChatProviderHost(candidate.providerHost),
     firstContentAt: nonnegativeNumber(candidate.firstContentAt),
     responseCompletedAt: nonnegativeNumber(candidate.responseCompletedAt),
     finishedAt: nonnegativeNumber(candidate.finishedAt),

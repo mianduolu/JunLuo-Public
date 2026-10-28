@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   Modal,
   Pressable,
   ScrollView,
@@ -9,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { paginateNotebook } from '../letters/notebookPagination';
+import { notebookPageIndexFromInput, paginateNotebook } from '../letters/notebookPagination';
 import { NotebookSourceExcerpt } from '../letters/NotebookSourceExcerpt';
 import { NotebookManagement } from '../letters/NotebookManagement';
 import { WishPoolPanel } from '../wishPool/WishPoolPanel';
@@ -192,6 +193,7 @@ export function LetterScreen({ navigate }: Props) {
   const [letterFilter, setLetterFilter] = useState<LetterFilter>('all');
   const [notebookExpanded, setNotebookExpanded] = useState(false);
   const [notebookPageIndex, setNotebookPageIndex] = useState(0);
+  const [notebookPageInput, setNotebookPageInput] = useState('1');
   const correspondenceScroll = useRef<ScrollView>(null);
   const refreshVersion = useRef(0);
   const configured = !!chatConnection?.baseUrl.trim() && !!chatConnection?.model.trim() && !!chatKey.trim();
@@ -490,10 +492,12 @@ export function LetterScreen({ navigate }: Props) {
   const activeCounterCount = counterTasks.filter((task) => task.status === 'active').length;
   const latestNotebookEntry = notebookEntries[0];
   const notebookPage = paginateNotebook(notebookEntries, notebookPageIndex);
+  const notebookJumpIndex = notebookPageIndexFromInput(notebookPageInput, notebookPage.pageCount);
   const unreadNotebookCount = notebookEntries.filter((entry) => !entry.readAt).length;
 
   useEffect(() => {
     setNotebookPageIndex(notebookPage.pageIndex);
+    setNotebookPageInput(String(notebookPage.pageIndex + 1));
   }, [notebookPage.pageIndex]);
 
   const markNotebookPageRead = (entries: NotebookEntry[]) => {
@@ -523,6 +527,12 @@ export function LetterScreen({ navigate }: Props) {
     setNotebookPageIndex(nextPage.pageIndex);
     markNotebookPageRead(nextPage.entries);
     correspondenceScroll.current?.scrollTo({ y: 0, animated: false });
+  };
+
+  const jumpToNotebookPage = () => {
+    if (notebookJumpIndex === undefined) return;
+    Keyboard.dismiss();
+    turnNotebookPage(notebookJumpIndex);
   };
 
   const confirmDeleteNotebookEntry = (entry: NotebookEntry) => {
@@ -660,6 +670,29 @@ export function LetterScreen({ navigate }: Props) {
           </Text>
           {notebookExpanded ? (
             <View style={styles.notebookEntryList}>
+              {notebookEntries.length ? (
+                <View style={styles.notebookJumpRow}>
+                  <Text style={styles.notebookMoreText}>第 {notebookPage.pageIndex + 1} / {notebookPage.pageCount} 页</Text>
+                  <TextInput
+                    accessibilityLabel="小本本跳转页码"
+                    keyboardType="number-pad"
+                    returnKeyType="go"
+                    selectTextOnFocus
+                    value={notebookPageInput}
+                    onChangeText={setNotebookPageInput}
+                    onSubmitEditing={jumpToNotebookPage}
+                    placeholder="页码"
+                    style={styles.notebookPageInput}
+                  />
+                  <Pressable accessibilityRole="button" accessibilityLabel="跳转到小本本指定页"
+                    disabled={notebookJumpIndex === undefined}
+                    accessibilityState={{ disabled: notebookJumpIndex === undefined }}
+                    onPress={jumpToNotebookPage}
+                    style={[styles.notebookToggle, notebookJumpIndex === undefined && styles.notebookPageDisabled]}>
+                    <Text style={styles.notebookToggleText}>跳转</Text>
+                  </Pressable>
+                </View>
+              ) : null}
               {notebookPage.entries.length ? (
                 notebookPage.entries.map((entry) => {
                   const keywordText = notebookKeywordText(entry);
@@ -1240,6 +1273,19 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   notebookPagination: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  notebookJumpRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  notebookPageInput: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#F2D7AD',
+    borderRadius: 10,
+    borderWidth: 1,
+    color: '#9A6530',
+    minHeight: 40,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    textAlign: 'center',
+    width: 64,
+  },
   notebookPageDisabled: { opacity: 0.4 },
   notebookCounterList: {
     gap: 8,

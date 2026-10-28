@@ -76,6 +76,13 @@ const MAX_KEYWORDS = 8;
 const MAX_TITLE_LENGTH = 40;
 const MAX_CONTENT_LENGTH = 480;
 const MAX_SOURCE_EXCERPT_LENGTH = 180;
+const notebookListeners = new Set<(snapshot: NotebookSnapshot) => void>();
+
+export function subscribeNotebookChanged(listener: (snapshot: NotebookSnapshot) => void) {
+  notebookListeners.add(listener);
+  return () => { notebookListeners.delete(listener); };
+}
+
 const MECHANICAL_NOTEBOOK_PATTERN =
   /(?:NOTEBOOK_ENTRY|COUNTER_REQUEST|隐藏指令|系统(?:检测|记录|提示)?|计数器|检测到关键词|关键词命中|触发(?:了|到)?|落库|写入数据库|用户说了?|小仓鼠说(?:了)?)/i;
 const NOTEBOOK_DIRECTIVE_PATTERN = /\[\[(?:NOTEBOOK_ENTRY|COUNTER_REQUEST):[\s\S]*?\]\]/g;
@@ -238,6 +245,9 @@ async function loadSnapshot(): Promise<NotebookSnapshot> {
 async function saveSnapshot(snapshot: NotebookSnapshot) {
   const normalized = normalizeSnapshot(snapshot);
   await AsyncStorage.setItem(NOTEBOOK_KEY, JSON.stringify(normalized));
+  for (const listener of notebookListeners) {
+    try { listener(normalized); } catch { /* A view must not turn a saved entry into a failed write. */ }
+  }
   return normalized;
 }
 

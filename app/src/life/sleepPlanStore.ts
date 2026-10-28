@@ -14,6 +14,7 @@ import {
   CHAT_SLEEP_LEAD_MS, CHAT_SLEEP_QUIET_MS, CHAT_SLEEP_ROUND_MS, MIN_MAIN_SLEEP_MS, nightSleepPhaseAt, pendingSleepDueAt,
   type ChatSleepPlanContext, type SleepPlanEvent, type SleepScheduleSnapshot,
   canNearStatusChangeSleepSchedule, canNaturallyWakeEarly, sleepWakeAlarmAt,
+  startDeliveredSleepFarewell, type SleepGreetingBoundary, type SleepGreetingReceipt,
 } from './sleepPlanPolicy';
 
 // Serialize the existing two-day writes and reject superseded model replies.
@@ -207,6 +208,7 @@ export async function saveNightAndMorning(day: AssistantLifeDay, now: number) {
 export async function commitSleepScheduleDecision(input: {
   context: SleepPlanContext; sleepAt?: unknown; wakeAt?: unknown; messageId: string;
   phase: 'prepare' | 'wake' | 'near-status'; now?: number;
+  deferGreeting?: { sessionId: string; messageId: string };
 }): Promise<SleepScheduleResult> {
   return withSleepPlanWrite(() => commitSleepScheduleDecisionUnlocked(input));
 }
@@ -266,9 +268,16 @@ async function commitSleepScheduleDecisionUnlocked(input: Parameters<typeof comm
     next.nightSleepPlan = {
       ...day.nightSleepPlan, revision: day.nightSleepPlan.revision + 1, scheduleChangedAt: now,
       ...(wake !== undefined ? { explicitWakeAt: nextWake } : {}),
-      actualSleepAt: day.nightSleepPlan.actualSleepAt ?? (nextSleep <= now ? nextSleep : undefined), lastMessageId: input.messageId,
+      actualSleepAt: day.nightSleepPlan.actualSleepAt ?? (nextSleep <= now && !input.deferGreeting ? nextSleep : undefined), lastMessageId: input.messageId,
       ...(input.sleepAt !== undefined ? { pendingSleep: undefined, recovery: undefined } : {}),
     };
+    if (input.deferGreeting && nextSleep <= now && next.nightSleepPlan.actualSleepAt === undefined) {
+      next.nightSleepPlan.pendingSleep = { id: `greeting:${input.messageId}`, kind: 'sleep', decidedAt: now,
+        hardDeadlineAt: nextSleep, round: 1, roundStartedAt: now, roundDeadlineAt: now + CHAT_SLEEP_ROUND_MS,
+        sessionId: input.deferGreeting.sessionId, turnId: input.deferGreeting.messageId,
+        sourceMessageIds: [input.deferGreeting.messageId],
+        greeting: { fallbackAt: nextSleep, waitingUntil: now + CHAT_SLEEP_ROUND_MS } };
+    }
     addEvent(next, { id: `schedule:${input.messageId}`, kind: 'schedule', at: now,
       ...(input.sleepAt !== undefined && nextSleep !== day.sleepTargetAt ? { sleepAt: nextSleep } : {}),
       ...(wake !== undefined && nextWake !== sleepWakeTarget(day.nightSleepPlan, day.nightSleepPlan.actualSleepAt ?? day.sleepTargetAt) ? { wakeAt: nextWake } : {}),
@@ -308,8 +317,60 @@ export async function markSleepWakeSettled(nightKey: string, now: number, expect
   });
 }
 
-export async function settleSleepNight(now: number) {
-  await withSleepPlanWrite(async () => {
+/** A receipt for the exact saved message; this path never requests a model. */
+export async function recordSleepGreetingDelivery(boundary: SleepGreetingBoundary, receipt: SleepGreetingReceipt,
+  now = Date.now()) {
+  return withSleepPlanWrite(async () => {
+    const day = await loadAssistantLifeDay(boundary.nightKey), plan = day?.nightSleepPlan;
+    if (!day || !plan) return false;
+    const opportunity = boundary.phase === 'return' ? undefined : plan[boundary.phase];
+    if (opportunity?.greeting?.messageId === receipt.messageId
+      || boundary.phase === 'return' && plan.events?.some(event => event.id === boundary.episodeId && event.greeting?.messageId === receipt.messageId)) return true;
+    const live = plan.actualWakeAt === undefined && (boundary.phase !== 'prepare' || plan.actualSleepAt === undefined)
+      && (boundary.phase !== 'return'
+      || !plan.events?.some(event => (event.kind === 'sleep_return' || event.kind === 'morning_awake') && event.at >= boundary.dueAt));
+    if (boundary.phase !== 'return' && opportunity?.messageId === receipt.messageId) {
+      plan[boundary.phase] = { ...opportunity, greeting: receipt, deliveredAt: receipt.deliveredAt };
+    }
+    if (boundary.phase === 'return' && receipt.deliveredAt >= boundary.deadlineAt) return false;
+    if (live && boundary.phase !== 'wake') startDeliveredSleepFarewell(day, {
+      boundary: boundary.phase === 'prepare' ? { ...boundary, deadlineAt: day.sleepTargetAt } : boundary,
+      receipt, now: receipt.deliveredAt });
+    await saveNightAndMorning(day, now);
+    return true;
+  });
+}
+
+export async function recordSleepGreetingAttempt(boundary: SleepGreetingBoundary, opportunityId: string) {
+  if (boundary.phase !== 'return') return;
+  return withSleepPlanWrite(async () => {
+    const day = await loadAssistantLifeDay(boundary.nightKey);
+    const event = day?.nightSleepPlan?.events?.find(value => value.id === boundary.episodeId && value.kind === 'poke_awake');
+    if (!day || !event || event.greetingOpportunityId && event.greetingOpportunityId !== opportunityId) throw Error('sleep-fragment-stale');
+    event.greetingOpportunityId = opportunityId;
+    await saveNightAndMorning(day, Date.now());
+  });
+}
+
+export async function finishFailedSleepFarewell(nightKey: string, messageId: string, now = Date.now()) {
+  return withSleepPlanWrite(async () => {
+    const day = await loadAssistantLifeDay(nightKey), pending = day?.nightSleepPlan?.pendingSleep;
+    if (!day || !pending?.greeting || pending.greeting.deliveredAt !== undefined || pending.turnId !== messageId
+      || pending.kind !== 'sleep') return;
+    pending.turnEndedAt = Math.min(now, pending.roundDeadlineAt);
+    pending.dueAt = Math.max(now, day.sleepTargetAt);
+    pending.greeting.waitingUntil = pending.dueAt;
+    await saveNightAndMorning(day, now);
+  });
+}
+
+/** Returned only by a successful new early-wake write; never reconstructed from a loaded night. */
+export type FreshEarlyWake = {
+  nightKey: string; revision: number; actualSleepAt: number; morningAwakeAt: number; formalWakeAt: number;
+};
+
+export async function settleSleepNight(now: number): Promise<FreshEarlyWake | undefined> {
+  return withSleepPlanWrite(async () => {
     const day = await readRelevantSleepNight(now);
     if (!day?.nightSleepPlan || day.nightSleepPlan.actualWakeAt !== undefined) return;
     const before = JSON.stringify(day.nightSleepPlan);
@@ -318,19 +379,20 @@ export async function settleSleepNight(now: number) {
     const pending = plan.pendingSleep;
     if (pending && pending.turnEndedAt === undefined && now >= pending.roundDeadlineAt) {
       pending.turnEndedAt = pending.roundDeadlineAt;
-      pending.dueAt = pending.roundDeadlineAt + CHAT_SLEEP_QUIET_MS;
+      pending.dueAt = pending.greeting ? pending.greeting.waitingUntil : pending.roundDeadlineAt + CHAT_SLEEP_QUIET_MS;
     }
     const due = pendingSleepDueAt(plan);
     const state = await loadAssistantState();
     rememberCurrentPoke(day, state, now);
     if (pending && due !== undefined && now >= due) {
+      const settledAt = pending.greeting ? now : due;
       if (pending.kind === 'sleep') {
-        const changed = changeNightSleepTime(day, due);
+        const changed = changeNightSleepTime(day, settledAt);
         day.segments = changed.segments; day.sleepTargetAt = changed.sleepTargetAt;
-        plan.actualSleepAt = due;
+        plan.actualSleepAt = settledAt;
       }
-      addEvent(day, { id: `sleep:${pending.id}`, kind: pending.kind === 'return' ? 'sleep_return' : 'sleep', at: due,
-        sleepAt: due, sessionId: pending.sessionId, turnId: pending.turnId,
+      addEvent(day, { id: `sleep:${pending.id}`, kind: pending.kind === 'return' ? 'sleep_return' : 'sleep', at: settledAt,
+        sleepAt: settledAt, sessionId: pending.sessionId, turnId: pending.turnId,
         messageIds: pending.sourceMessageIds, toolCallId: pending.id });
       plan.pendingSleep = undefined;
       plan.revision += 1;
@@ -344,7 +406,7 @@ export async function settleSleepNight(now: number) {
     if (!plan.pendingSleep && poke?.until !== undefined && now >= poke.until
       && !plan.events?.some(event => event.kind === 'sleep_return' && event.at >= poke.at)
       && !plan.events?.some(event => event.kind === 'morning_awake' && event.at >= poke.at)) {
-      addEvent(day, { id: `return:${poke.id}`, kind: 'sleep_return', at: poke.until, sleepAt: poke.until });
+      addEvent(day, { id: `return:${poke.id}`, kind: 'sleep_return', at: now, sleepAt: now });
     }
     if (JSON.stringify(plan) !== before) await saveNightAndMorning(day, now);
     if (plan.actualSleepAt !== undefined && !plan.pendingSleep && nightSleepPhaseAt(day, now) === 'sleeping') {
@@ -356,6 +418,7 @@ export async function settleSleepNight(now: number) {
       }
     }
     const wakeAt = sleepWakeTarget(plan, plan.actualSleepAt ?? day.sleepTargetAt);
+    let freshEarlyWake: FreshEarlyWake | undefined;
     let recoveredEarly = false;
     if (now < wakeAt && !plan.wake && plan.morningAwakeAt === undefined && !plan.pendingSleep && plan.recovery?.eligible
       && plan.recovery.estimatedAt !== undefined && now >= sleepWakeAlarmAt(day, now) && nightSleepPhaseAt(day, now) === 'sleeping') {
@@ -367,6 +430,8 @@ export async function settleSleepNight(now: number) {
       && !plan.pendingSleep && (now >= wakeAt || recoveredEarly)) {
       plan.morningAwakeAt = recoveredEarly ? now : wakeAt;
       addEvent(day, { id: `${day.dateKey}:morning-awake`, kind: 'morning_awake', at: plan.morningAwakeAt });
+      if (recoveredEarly) freshEarlyWake = { nightKey: day.dateKey, revision: plan.revision,
+        actualSleepAt: plan.actualSleepAt, morningAwakeAt: plan.morningAwakeAt, formalWakeAt: wakeAt };
     }
     if (plan.morningAwakeAt !== undefined && plan.actualWakeAt === undefined && now >= wakeAt
       && (plan.wake && ['complete', 'failed', 'skipped'].includes(plan.wake.status)
@@ -375,10 +440,11 @@ export async function settleSleepNight(now: number) {
       addEvent(day, { id: `${day.dateKey}:get-up`, kind: 'get_up', at: wakeAt, wakeAt });
     }
     if (JSON.stringify(plan) !== before) await saveNightAndMorning(day, now);
+    return freshEarlyWake;
   });
 }
 
-type ChatSleepTurn = { sessionId: string; turnId: string; sourceMessageIds?: string[]; now?: number };
+type ChatSleepTurn = { sessionId: string; turnId: string; sourceMessageIds?: string[]; now?: number; replySaved?: boolean };
 
 function wasChatSleepTurnSuperseded(events: SleepPlanEvent[] | undefined, input: ChatSleepTurn) {
   return events?.some(event => (event.kind === 'schedule' || event.kind === 'sleep' || event.kind === 'sleep_return')
@@ -453,7 +519,8 @@ export async function commitChatSleepScheduleDecision(input: {
       if (!plan.pendingSleep && now >= roundStartedAt + CHAT_SLEEP_ROUND_MS) return result('stale');
       plan.pendingSleep ??= { id: input.callId, kind: isPoke ? 'return' : 'sleep', decidedAt: now,
         hardDeadlineAt, round: 1, roundStartedAt, roundDeadlineAt: roundStartedAt + CHAT_SLEEP_ROUND_MS,
-        sessionId: context.sessionId, turnId: context.turnId, sourceMessageIds: context.sourceMessageIds };
+        sessionId: context.sessionId, turnId: context.turnId, sourceMessageIds: context.sourceMessageIds,
+        ...(isPoke ? { greeting: { fallbackAt: hardDeadlineAt, waitingUntil: hardDeadlineAt } } : {}) };
       if (wake !== undefined) plan.explicitWakeAt = wake;
       plan.lastMessageId = input.callId; plan.revision += 1;
       addEvent(day, { id: `intent:${input.callId}`, kind: 'sleep_intent', at: now, sleepAt: now,
@@ -487,6 +554,7 @@ export async function beginChatSleepTurn(input: ChatSleepTurn, allowNextRound = 
         return;
       }
       if (!allowNextRound || pending.sessionId === input.sessionId && pending.turnId === input.turnId || pending.round === 2
+        || pending.greeting && now >= pending.greeting.waitingUntil
         || pending.turnEndedAt === undefined || now >= pendingSleepDueAt(plan)!) return;
       plan.pendingSleep = { ...pending, round: 2, roundStartedAt: now, roundDeadlineAt: now + CHAT_SLEEP_ROUND_MS,
         sessionId: input.sessionId, turnId: input.turnId, sourceMessageIds: input.sourceMessageIds,
@@ -501,7 +569,8 @@ export async function beginChatSleepTurn(input: ChatSleepTurn, allowNextRound = 
       rememberChatWindow(day, now);
       plan.pendingSleep = { id: `farewell:${input.sessionId}:${input.turnId}`, kind: isPoke ? 'return' : 'sleep',
         decidedAt: now, hardDeadlineAt: target, round: 1, roundStartedAt: now, roundDeadlineAt: now + CHAT_SLEEP_ROUND_MS,
-        sessionId: input.sessionId, turnId: input.turnId, sourceMessageIds: input.sourceMessageIds };
+        sessionId: input.sessionId, turnId: input.turnId, sourceMessageIds: input.sourceMessageIds,
+        greeting: { fallbackAt: target, waitingUntil: target } };
     }
     await saveNightAndMorning(day, now);
   });
@@ -513,9 +582,14 @@ export async function finishChatSleepTurn(input: ChatSleepTurn) {
     if (!day || !pending || pending.sessionId !== input.sessionId || pending.turnId !== input.turnId
       || pending.turnEndedAt !== undefined) return;
     const endedAt = Math.min(now, pending.roundDeadlineAt);
+    const greeting = pending.greeting;
+    const successful = input.replySaved === true && now <= pending.roundDeadlineAt;
+    const waitingUntil = greeting ? successful ? now + CHAT_SLEEP_QUIET_MS : greeting.waitingUntil : undefined;
+    const dueAt = greeting ? Math.max(waitingUntil!, pending.kind === 'sleep' ? day.sleepTargetAt : -Infinity) : endedAt + CHAT_SLEEP_QUIET_MS;
     day.nightSleepPlan!.pendingSleep = { ...pending, turnEndedAt: endedAt,
       sourceMessageIds: input.sourceMessageIds ?? pending.sourceMessageIds,
-      dueAt: endedAt + CHAT_SLEEP_QUIET_MS };
+      ...(greeting ? { greeting: { ...greeting, ...(successful ? { deliveredAt: now } : {}), waitingUntil: waitingUntil! } } : {}),
+      dueAt };
     await saveNightAndMorning(day, now);
   });
 }
@@ -546,7 +620,11 @@ export async function isChatSleepReplyCurrent(input: ChatSleepTurn & { startedAt
   const relevant = await readRelevantSleepNight(now);
   if (relevant && !days.some(day => day?.dateKey === relevant.dateKey)) days.push(relevant);
   if (days.some(day => wasChatSleepTurnSuperseded(day?.nightSleepPlan?.events, input))) return false;
-  const pending = relevant?.nightSleepPlan?.pendingSleep;
+  const storedPending = relevant?.nightSleepPlan?.pendingSleep;
+  // A greeting at the original half-hour lead does not close ordinary chat before the actual bedtime.
+  const pending = storedPending?.greeting && storedPending.kind === 'sleep'
+    && storedPending.turnEndedAt !== undefined && now < relevant!.sleepTargetAt
+    && (storedPending.round === 2 || now >= storedPending.greeting.waitingUntil) ? undefined : storedPending;
   if (pending && (pending.sessionId !== input.sessionId || pending.turnId !== input.turnId
     || pending.turnEndedAt !== undefined || now >= pending.roundDeadlineAt)) return false;
   if (relevant && nightSleepPhaseAt(relevant, now) === 'sleeping') return false;

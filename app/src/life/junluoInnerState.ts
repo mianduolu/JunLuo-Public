@@ -140,6 +140,7 @@ export type JunluoEmotionComponentV1 = {
   operationId: string;
   sourceId: string;
   target: BaiyunEmotionTarget;
+  reason?: string | null;
 };
 
 export type JunluoEmotionSnapshotV1 = {
@@ -437,7 +438,9 @@ export function isJunluoDesireState(value: unknown): value is JunluoDesireState 
 
 function isEmotionComponent(value: unknown): value is JunluoEmotionComponentV1 {
   return isRecord(value)
-    && hasExactKeys(value, ['emotionId', 'intensity', 'occurredAt', 'operationId', 'sourceId', 'target'])
+    && hasExactKeys(value, ['emotionId', 'intensity', 'occurredAt', 'operationId', 'sourceId', 'target',
+      ...(Object.hasOwn(value, 'reason') ? ['reason'] : [])])
+    && (!Object.hasOwn(value, 'reason') || value.reason === null || typeof value.reason === 'string')
     && isOneOf(BAIYUN_EMOTION_IDS, value.emotionId)
     && isUnit(value.intensity)
     && isTimestamp(value.occurredAt)

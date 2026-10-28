@@ -28,6 +28,7 @@ import {
   assertBaiyunContinuityTransition,
   buildBaiyunContinuityEvent,
   canCompleteBaiyunContinuityEvent,
+  isOrdinaryReminderCareEvent,
   resolveBaiyunContinuityCompletionRule,
   type BaiyunContinuityCompletionRule,
   type BaiyunContinuityEvent,
@@ -1801,21 +1802,30 @@ export async function applyBaiyunCareMatterUpdates(input: {
   return enqueueMutation(async () => {
     const result: BaiyunContinuityEvent[] = [];
     const reject = (reason: string) => { void recordChatCareRejection(reason); input.onRejected?.(reason); };
-    for (const update of input.updates.slice(0, 3)) {
+    for (const requestedUpdate of input.updates.slice(0, 3)) {
       if (input.canCommit?.() === false) break;
+      const { sourceSessionId, ...update } = requestedUpdate;
+      if (sourceSessionId !== undefined && (typeof sourceSessionId !== 'string' || !sourceSessionId
+        || update.state !== '结束' || !update.eventId)) {
+        reject('care_matter_source_invalid'); continue;
+      }
+      const sessionId = sourceSessionId ?? input.sessionId;
       if (typeof update.quote !== 'string' || !update.quote.trim()
         || !['继续', '结束'].includes(update.state)
         || Object.keys(update).some(key => !['eventId', 'expectedRevision', 'quote', 'state', 'sourceMessageId', 'occurredAt'].includes(key))) {
         reject('care_matter_invalid_evidence'); continue;
       }
-      if (!input.sessionId || !update.sourceMessageId || !Number.isSafeInteger(update.occurredAt)
+      if (!input.sessionId || !sessionId || !update.sourceMessageId || !Number.isSafeInteger(update.occurredAt)
         || update.occurredAt < 0 || !Number.isSafeInteger(input.now) || input.now < update.occurredAt) {
         reject('care_matter_source_invalid'); continue;
       }
-      const operationId = `care-update-v3:${bytesToHex(sha256(utf8ToBytes(JSON.stringify([input.sessionId, update.sourceMessageId, update.eventId ?? null, update.quote]))))}`;
+      const operationId = `care-update-v3:${bytesToHex(sha256(utf8ToBytes(JSON.stringify([
+        sessionId, update.sourceMessageId, update.eventId ?? null, update.quote,
+        ...(update.state === '结束' ? ['结束'] : []),
+      ]))))}`;
       try {
         await commitOperation({ version: 1, type: 'care_matter', formatVersion: 3, operationId,
-          sessionId: input.sessionId, update, occurredAt: input.now, allowNew: input.allowNew }, epoch, input.canCommit);
+          sessionId, update, occurredAt: input.now, allowNew: input.allowNew }, epoch, input.canCommit);
         const row = await getEventRowForOperation(await getContinuityDatabase(), operationId);
         if (row) result.push(eventFromRow(row));
       } catch (error) {
@@ -2412,7 +2422,14 @@ export async function getBaiyunContinuityEventByIdempotencyKey(idempotencyKey: s
 }
 
 export async function listOpenBaiyunContinuityEvents() {
-  return listBaiyunContinuityEvents({ statuses: ['open', 'waiting'] });
+  const events: BaiyunContinuityEvent[] = [];
+  for (let offset = 0; ; offset += 200) {
+    const page = await listBaiyunContinuityEvents({
+      statuses: ['open', 'waiting'], limit: 200, offset, readOnly: offset > 0,
+    });
+    events.push(...page.filter((event) => !isOrdinaryReminderCareEvent(event)));
+    if (events.length >= 200 || page.length < 200) return events.slice(0, 200);
+  }
 }
 
 function normalizeContextTarget(target: MemoryContinuityContextLink) {

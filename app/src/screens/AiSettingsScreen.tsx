@@ -1359,6 +1359,27 @@ export function AiSettingsScreen({ navigate, section }: Props) {
               />
             </Field>
             <SettingsDisclosure title="高级参数与上下文">
+            <Field label="缓存方式">
+              <View style={styles.previewRow}>
+                {([
+                  ['server-default', '由服务处理（默认）'],
+                  ['ephemeral-first-system', '显式缓存（连接支持时）'],
+                ] as const).map(([mode, label]) => {
+                  const selected = (draft.promptCacheMode === 'ephemeral-first-system' ? draft.promptCacheMode : 'server-default') === mode;
+                  return (
+                    <Pressable
+                      key={mode}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: selected }}
+                      onPress={() => setDraft((current) => current ? { ...current, promptCacheMode: mode } : current)}
+                      style={[styles.previewChip, selected && styles.previewChipSelected]}
+                    >
+                      <Text style={selected ? styles.previewChipSelectedText : styles.previewChipText}>{label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </Field>
             <View style={styles.parameterPanel}>
               <View style={styles.parameterRow}>
                 <View style={styles.parameterCopy}>

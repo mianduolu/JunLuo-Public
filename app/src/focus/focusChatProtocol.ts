@@ -73,6 +73,7 @@ export async function prepareJunluoFocusChatTurn(input: {
       buildChatCareContext(careItems), buildChatCareGuidance(careItems),
       pendingShares.fixedItems.length
         ? `${BAIYUN_CHAT_FIXED_SHARE_RESPONSE_GUIDANCE_PROTOCOL}\n\n${pendingShares.fixedInstruction}` : '',
+      pendingShares.expiredShareInstruction,
     ].filter(Boolean).join('\n\n'),
     sessionId: input.sessionId,
   };

@@ -38,6 +38,7 @@ import { runBackupProtectedTask } from '../backup/backupService';
 import { AppText as Text } from '../components/AppText';
 import { BackgroundSurface } from '../components/BackgroundSurface';
 import { HomeNowScheduleCard } from '../components/HomeNowScheduleCard';
+import { HomeBackgroundAiStatus } from '../components/HomeBackgroundAiStatus';
 import { JunLuoPortraitSurface } from '../components/JunLuoPortraitSurface';
 import { ScalePressable } from '../components/ScalePressable';
 import { generateFocusInvitation } from '../focus/focusCompanion';
@@ -478,6 +479,7 @@ export function HomeScreen({
             </ScalePressable>
             <ScrollView style={{ maxHeight: styles.aiStatus.lineHeight * 3 * fontScale + styles.aiStatus.marginTop }} nestedScrollEnabled showsVerticalScrollIndicator>
               <Text style={styles.aiStatus}>{assistantStatus.activity}</Text>
+              <HomeBackgroundAiStatus active={active} />
             </ScrollView>
           </View>
         </View>

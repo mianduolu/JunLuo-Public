@@ -5,6 +5,8 @@ import { AiCostDeferredError, checkAutomaticRequestCost } from '../ai/aiCallBudg
 import { beginPromptCacheMetric } from '../ai/promptCacheMetrics';
 import { loadAutomaticRemoteAiPolicy } from '../runtime/automaticRemoteAiPolicy';
 import { getAutomaticCostRestriction } from '../runtime/automaticRemoteAiPolicyCore';
+import { buildChatModelParameterPayload } from '../ai/modelParameters';
+import { withRequestBodyDeadline } from '../utils/requestBodyDeadline';
 import type { WebSearchProviderSearchResult } from './webSearchProvider';
 
 export const WEB_VOYAGE_TOPIC_INSTRUCTION = `【这次想出去看看什么】
@@ -162,23 +164,24 @@ export async function requestWebVoyageDecision(
       now: Date.now(), purpose: 'web-voyage' });
     if (cost.mode === 'wait') throw new AiCostDeferredError('cost-window', cost.retryAt);
   } catch (error) { await onUnsent?.(); throw error; }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60_000);
   let cacheMetric: ReturnType<typeof beginPromptCacheMetric> | undefined;
   try {
-    const body = JSON.stringify({ model: connection.model.trim(), ...buildAssistantLifeShortJsonRequest(connection, 0.45), max_tokens: 160,
-      messages: [{ role: 'system', content: persona }, { role: 'system', content: instruction },
-        { role: 'system', content: material }] });
-    cacheMetric = beginPromptCacheMetric({ contextProfile: 'proactive-lite',
-      contextSource: instruction === WEB_VOYAGE_TOPIC_INSTRUCTION ? 'voyage.topic' : 'voyage.selection', connection });
-    const response = await fetch(`${connection.baseUrl.trim().replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST', signal: controller.signal,
-      headers: { Authorization: `Bearer ${config.apiKey.trim()}`, 'Content-Type': 'application/json' },
-      body,
-    });
-    if (!response.ok) throw new Error(`query_http_${response.status}`);
-    const payload = await response.json();
-    cacheMetric.recordUsage(payload?.usage);
+    const payload = await withRequestBodyDeadline(async signal => {
+      const body = JSON.stringify({ model: connection.model.trim(), ...buildAssistantLifeShortJsonRequest(connection, 0.45), max_tokens: buildChatModelParameterPayload(connection.modelParameters).max_tokens,
+        messages: [{ role: 'system', content: persona }, { role: 'system', content: instruction },
+          { role: 'system', content: material }] });
+      cacheMetric = beginPromptCacheMetric({ contextProfile: 'proactive-lite',
+        contextSource: instruction === WEB_VOYAGE_TOPIC_INSTRUCTION ? 'voyage.topic' : 'voyage.selection', connection });
+      const response = await fetch(`${connection.baseUrl.trim().replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST', signal,
+        headers: { Authorization: `Bearer ${config.apiKey.trim()}`, 'Content-Type': 'application/json' },
+        body,
+      });
+      if (signal.aborted) throw new Error('timeout');
+      if (!response.ok) throw new Error(`query_http_${response.status}`);
+      return response.json();
+    }, 60_000);
+    cacheMetric?.recordUsage(payload?.usage);
     const text = answerText(payload);
     const choice = payload?.choices?.[0];
     const rawFinish = choice?.finish_reason;
@@ -193,5 +196,5 @@ export async function requestWebVoyageDecision(
       catch { throw new WebVoyageDecisionResponseError('decision_response_truncated', `探索答卷输出到顶，未取得完整答卷。${metadata}`); }
     }
     return text;
-  } finally { cacheMetric?.finish(); clearTimeout(timer); }
+  } finally { cacheMetric?.finish(); }
 }

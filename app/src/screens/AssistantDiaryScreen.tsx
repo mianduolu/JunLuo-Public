@@ -17,9 +17,11 @@ import {
 } from '../ai/behavior/continuityLedger';
 import { loadBaiyunContinuityEventsWithoutAdvancing } from '../ai/behavior/continuityLedgerAdapter';
 import {
-  loadBaiyunShareResponsePresentation,
+  loadBaiyunPendingShareExchanges,
 } from '../ai/behavior/actionShareResponseStore';
+import { projectBaiyunShareResponsePresentation } from '../ai/behavior/actionShareResponsePresentation';
 import type { BaiyunPendingShareExchange } from '../ai/behavior/actionShareResponse';
+import { loadLetters } from '../letters/letterStore';
 import {
   presentBaiyunContinuityEvent,
 } from '../ai/behavior/continuityLedgerPresentation';
@@ -43,6 +45,7 @@ import { AssistantDiaryContinuityReviewSection } from './AssistantDiaryContinuit
 import { AssistantDiaryContinuitySource } from './AssistantDiaryContinuitySource';
 import { loadContinuitySourceMessages, type ContinuitySourceMessages } from '../ai/behavior/continuitySourceMessages';
 import { JunluoInnerStateDiaryCard } from './JunluoInnerStateDiaryCard';
+import { TodaySleepScheduleCard } from './TodaySleepScheduleCard';
 import { JunluoThoughtDiaryCard } from './JunluoThoughtDiaryCard';
 import { AppText as Text, AppTextInput as TextInput } from '../components/AppText';
 import { BaiyunContinuityContextSummaryCard } from '../memory/BaiyunContinuityContextSummaryCard';
@@ -241,6 +244,7 @@ export function AssistantDiaryScreen({ navigate }: Props) {
       nextGenerationDiagnostics,
       nextPersistenceDiagnostic,
       nextShareExchanges,
+      nextLetters,
     ] = await Promise.all([
       loadAssistantLifeDay(diaryDateKey),
       loadJunluoThoughtState(),
@@ -248,7 +252,8 @@ export function AssistantDiaryScreen({ navigate }: Props) {
       buildLifeMaterialSnapshot(),
       loadAssistantLifeGenerationDiagnostics(),
       loadAssistantStatePersistenceDiagnostic(),
-      loadBaiyunShareResponsePresentation(),
+      loadBaiyunPendingShareExchanges(),
+      loadLetters(),
     ]);
     setDay(nextDay);
     setThoughtState(nextThoughtState);
@@ -256,7 +261,7 @@ export function AssistantDiaryScreen({ navigate }: Props) {
     setLifeMaterialSnapshot(nextLifeMaterialSnapshot);
     setGenerationDiagnostics(nextGenerationDiagnostics);
     setPersistenceDiagnostic(nextPersistenceDiagnostic);
-    setShareExchanges(nextShareExchanges);
+    setShareExchanges(projectBaiyunShareResponsePresentation(nextShareExchanges, nextLetters));
     setInnerStateRefreshVersion((current) => current + 1);
     void refreshContinuityEvents().catch(() => undefined);
   }, [diaryDateKey, refreshContinuityEvents]);
@@ -434,6 +439,7 @@ export function AssistantDiaryScreen({ navigate }: Props) {
         contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom + 72, 96) }]}
         showsVerticalScrollIndicator={false}
       >
+        <TodaySleepScheduleCard refreshVersion={innerStateRefreshVersion} />
         <JunluoInnerStateDiaryCard refreshVersion={innerStateRefreshVersion} />
 
         <AssistantLifeMaterialDiagnosticsCard

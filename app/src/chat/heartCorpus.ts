@@ -132,6 +132,16 @@ export function findHeartReplyRound(
 ): HeartReplyRound | null {
   const anchorIndex = messages.findIndex((message) => message.id === anchorId);
   const anchor = messages[anchorIndex];
+  if (anchor?.role === 'I' && anchor.source === 'proactive-message' && anchor.deliveryStatus !== 'failed') {
+    // Proactive bubbles arrive separately; later deliveries must not change an existing favorite.
+    return {
+      exportable: isPureTextMessage(anchor),
+      firstId: anchor.id,
+      iMessages: [anchor],
+      replyRoundId: anchor.id,
+      youMessages: [],
+    };
+  }
   if (anchorIndex < 0 || !anchor || anchor.role !== 'I' || !isOrdinaryPrivateMessage(anchor)) {
     return null;
   }
@@ -188,8 +198,11 @@ export function createHeartCorpusEntry(input: {
 export function buildHeartCorpusMarkdown(rounds: readonly ResolvedHeartCorpusRound[]) {
   const lines = ['# 爱心语料', ''];
   rounds.forEach((round, index) => {
-    lines.push(`## 第 ${index + 1} 轮`, '', '### 我说', '');
-    round.youMessages.forEach((message) => lines.push(message.content.trim(), ''));
+    lines.push(`## 第 ${index + 1} 轮`, '');
+    if (round.youMessages.length) {
+      lines.push('### 我说', '');
+      round.youMessages.forEach((message) => lines.push(message.content.trim(), ''));
+    }
     lines.push('### 你说', '');
     round.iMessages.forEach((message) => lines.push(message.content.trim(), ''));
   });
@@ -220,7 +233,8 @@ export function sortHeartCorpusForExport(
   rounds: readonly ResolvedHeartCorpusRound[],
 ) {
   return [...rounds].sort((left, right) => (
-    (left.youMessages[0]?.createdAt ?? 0) - (right.youMessages[0]?.createdAt ?? 0)
+    (left.youMessages[0]?.createdAt ?? left.iMessages[0]?.createdAt ?? 0)
+      - (right.youMessages[0]?.createdAt ?? right.iMessages[0]?.createdAt ?? 0)
     || left.replyRoundId.localeCompare(right.replyRoundId)
   ));
 }

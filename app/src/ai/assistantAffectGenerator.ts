@@ -37,8 +37,8 @@ export async function prepareAssistantAffect(input: AssistantAffectInput) {
   const envelope = await buildAssistantStatePairEnvelope({ contextSource, materialPrompt: material(), profile: input.profile ?? defaultAiProfile });
   const apiMessages = () => [
     { role: 'system' as const, content: envelope.stableSystemPrompt },
-    { role: 'system' as const, content: material() },
     { role: 'system' as const, content: ASSISTANT_AFFECT_PROMPT },
+    { role: 'system' as const, content: material() },
   ];
   const diagnostics: import('./assistantLifeGenerationShared').AssistantLifeGenerationDiagnostics = { outputChars: 0, recoveredFromReasoning: false, responseFormatRequested: input.connection.chatJsonOutputEnabled === true };
   const capacityFits = () => estimateApiMessagesTokens(apiMessages()) + 900 + 512 <= (input.connection.contextWindowTokens ?? 65536);

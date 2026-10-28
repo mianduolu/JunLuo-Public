@@ -58,6 +58,23 @@ export type BaiyunContinuityEventStage =
 
 export type BaiyunContinuitySubject = 'I' | 'you';
 
+const ORDINARY_REMINDER_CARE_SOURCE_PREFIXES = [
+  'schedule-reminder:', 'schedule-companion:', 'todo-reminder:',
+] as const;
+
+/** Only the ordinary reminder producers use these source identities. */
+export function isOrdinaryReminderCareSource(sourceId: string) {
+  return ORDINARY_REMINDER_CARE_SOURCE_PREFIXES.some((prefix) => sourceId.startsWith(prefix));
+}
+
+/** Keep the original rows while excluding only these old automatic reminder cards. */
+export function isOrdinaryReminderCareEvent(
+  event: Pick<BaiyunContinuityEvent, 'schemaVersion' | 'kind' | 'source'>,
+) {
+  return event.schemaVersion === 2 && event.kind === 'care_process'
+    && event.source.kind === 'real_care' && isOrdinaryReminderCareSource(event.source.sourceId);
+}
+
 export type BaiyunContinuityResumeCondition =
   | { kind: 'at_time'; dueAt: number }
   | { kind: 'after_duration'; dueAt: number; durationMs: number }

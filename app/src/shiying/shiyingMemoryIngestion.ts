@@ -123,7 +123,8 @@ export async function nextShiyingOrganizationWork(options: { sessionId: string }
       return start;
     };
     const bodyStart = offset('body', snapshot.bodyVersion), imageNoteStart = offset('image_note', snapshot.imageNote?.version);
-    if (bodyStart >= snapshot.body.length && imageNoteStart >= (snapshot.imageNote?.body.length ?? 0)) continue;
+    if (!snapshot.body.slice(bodyStart).trim()
+      && !(snapshot.imageNote?.body ?? '').slice(imageNoteStart).trim()) continue;
     const retry = own.find(row => ['pending', 'failed'].includes(row.status) && row.bindings.every(binding =>
       binding.recordContentHash === snapshot.recordContentHash && binding.version === (binding.part === 'body' ? snapshot.bodyVersion : snapshot.imageNote?.version)
       && binding.start === (binding.part === 'body' ? bodyStart : imageNoteStart)))?.bindings;

@@ -5,6 +5,9 @@ export const BAIYUN_SHARE_RESPONSE_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 export const BAIYUN_MAX_SELF_DRIVEN_PENDING_SHARES = 3;
 export const BAIYUN_MAX_PENDING_SHARES = 4;
 export const BAIYUN_PENDING_SHARE_EXCERPT_LIMIT = 80;
+export const BAIYUN_SHARE_RESPONSE_WAIT_MS = 24 * 60 * 60 * 1000;
+export const BAIYUN_LETTER_RESPONSE_WAIT_MS = 3 * BAIYUN_SHARE_RESPONSE_WAIT_MS;
+export const BAIYUN_ENDED_SHARE_VISIBLE_MS = 24 * 60 * 60 * 1000;
 
 export type BaiyunPendingShareOrigin =
   | 'chat_action'
@@ -310,11 +313,82 @@ export function matchBaiyunShareResponsesFromCurrentYouMessage(input: {
   return { responses: [], skippedReason: 'no_content_anchor' };
 }
 
+export function getBaiyunShareResponseDeadline(record: BaiyunPendingShareExchange) {
+  const isLetter = record.origin === 'letter'
+    || (record.origin === 'chat_action' && record.sourceMessageIds.length > 0
+      && record.sourceMessageIds.every((id) => /^letter-.+-(original|reply)$/u.test(id)));
+  const deadline = record.createdAt + (isLetter
+    ? BAIYUN_LETTER_RESPONSE_WAIT_MS : BAIYUN_SHARE_RESPONSE_WAIT_MS);
+  return Number.isSafeInteger(record.createdAt) && Number.isSafeInteger(deadline)
+    ? deadline : undefined;
+}
+
+/** Effective local state only; reading this projection never changes the stored ledger. */
+export function projectBaiyunShareResponseExpiry(
+  records: readonly BaiyunPendingShareExchange[],
+  now = Date.now(),
+): BaiyunPendingShareExchange[] {
+  return records.map((record) => {
+    if (record.state !== 'waiting' || !Number.isSafeInteger(now)) return record;
+    const deadline = getBaiyunShareResponseDeadline(record);
+    if (deadline === undefined || now < deadline) return record;
+    return { ...record, state: 'unanswered', resolvedAt: deadline };
+  });
+}
+
+export type BaiyunExpiredShareAwarenessItem = {
+  id: string;
+  excerpt: string;
+  sharedAt: number;
+  deadlineAt: number;
+};
+
+export function getBaiyunExpiredShareAwarenessItems(
+  records: readonly BaiyunPendingShareExchange[],
+  now = Date.now(),
+): BaiyunExpiredShareAwarenessItem[] {
+  if (!Number.isSafeInteger(now)) return [];
+  return projectBaiyunShareResponseExpiry(records, now).flatMap((record) => {
+    const deadlineAt = getBaiyunShareResponseDeadline(record);
+    if (record.state !== 'unanswered' || deadlineAt === undefined || record.resolvedAt !== deadlineAt
+      || now < deadlineAt || now - deadlineAt >= BAIYUN_ENDED_SHARE_VISIBLE_MS) return [];
+    return [{ id: record.id, excerpt: codePointSlice(record.excerpt, BAIYUN_PENDING_SHARE_EXCERPT_LIMIT),
+      sharedAt: record.createdAt, deadlineAt }];
+  }).sort((left, right) => right.deadlineAt - left.deadlineAt || left.id.localeCompare(right.id)).slice(0, 4);
+}
+
+export function buildBaiyunExpiredShareAwarenessPrompt(
+  items: readonly BaiyunExpiredShareAwarenessItem[],
+  formatTime: (at: number) => string,
+) {
+  return items.map((item) => `【I 分享过的事】
+分享：${item.excerpt}
+分享时间：${formatTime(item.sharedAt)}
+截至 ${formatTime(item.deadlineAt)}，I 还没有记到 you 对这件事的回应。`).join('\n\n');
+}
+
+export function getBaiyunRecentEndedShareExchanges(
+  records: readonly BaiyunPendingShareExchange[],
+  sessionId?: string,
+  now = Date.now(),
+) {
+  return projectBaiyunShareResponseExpiry(records, now)
+    .filter((record) => {
+      const endedAt = record.resolvedAt ?? record.createdAt;
+      return record.state !== 'waiting'
+        && (!sessionId || record.sessionId === sessionId)
+        && endedAt <= now && now - endedAt < BAIYUN_ENDED_SHARE_VISIBLE_MS;
+    })
+    .sort((left, right) => (right.resolvedAt ?? right.createdAt) - (left.resolvedAt ?? left.createdAt))
+    .slice(0, 4);
+}
+
 export function getBaiyunActiveShareExchanges(
   records: readonly BaiyunPendingShareExchange[],
   sessionId?: string,
+  now = Date.now(),
 ) {
-  return records
+  return projectBaiyunShareResponseExpiry(records, now)
     .filter((record) => (
       record.state === 'waiting'
       && (!sessionId || record.sessionId === sessionId)
@@ -326,11 +400,12 @@ export function getBaiyunPendingSharePromptItems(
   records: readonly BaiyunPendingShareExchange[],
   sessionId: string,
   replyToMessageId?: string,
+  now = Date.now(),
 ): BaiyunPendingSharePromptItem[] {
   // 分享回应属于两小只的连续关系，而不是某个聊天窗口的临时状态。
   // sessionId 继续保留在调用接口中用于兼容旧代码，但等待项必须跨会话可见。
   void sessionId;
-  const allActive = getBaiyunActiveShareExchanges(records);
+  const allActive = getBaiyunActiveShareExchanges(records, undefined, now);
   const directReplyTarget = replyToMessageId
     ? allActive.find((record) => record.sourceMessageIds.includes(replyToMessageId))
     : undefined;
@@ -359,8 +434,9 @@ export function getBaiyunFixedPendingSharePromptItems(
   records: readonly BaiyunPendingShareExchange[],
   sessionId: string,
   replyToMessageId?: string,
+  now = Date.now(),
 ): BaiyunFixedPendingSharePromptItem[] {
-  return getBaiyunPendingSharePromptItems(records, sessionId, replyToMessageId)
+  return getBaiyunPendingSharePromptItems(records, sessionId, replyToMessageId, now)
     .map(({ pendingShareId, excerpt, directReplyTarget }) => ({
       pendingShareId,
       excerpt,
@@ -462,8 +538,9 @@ export function parseBaiyunFixedShareResponses(input: {
 export function getBaiyunPendingShareSettlementItems(
   records: readonly BaiyunPendingShareExchange[],
   replyToMessageId?: string,
+  now = Date.now(),
 ): BaiyunPendingSharePromptItem[] {
-  const active = getBaiyunActiveShareExchanges(records);
+  const active = getBaiyunActiveShareExchanges(records, undefined, now);
   const directReplyTargetId = replyToMessageId
     ? active.find((record) => record.sourceMessageIds.includes(replyToMessageId))?.id
     : undefined;
@@ -480,11 +557,12 @@ export function canRegisterBaiyunSelfDrivenShare(
   records: readonly BaiyunPendingShareExchange[],
   now = Date.now(),
 ) {
-  const waitingSelfDriven = records.filter((record) => (
+  const effectiveRecords = projectBaiyunShareResponseExpiry(records, now);
+  const waitingSelfDriven = effectiveRecords.filter((record) => (
     record.state === 'waiting' && record.invitationKind === 'self_driven'
   )).length;
   if (waitingSelfDriven >= BAIYUN_MAX_SELF_DRIVEN_PENDING_SHARES) return false;
-  return !records.some((record) => (
+  return !effectiveRecords.some((record) => (
     record.state === 'declined'
     && typeof record.resolvedAt === 'number'
     && now - record.resolvedAt < BAIYUN_SHARE_RESPONSE_COOLDOWN_MS
@@ -496,26 +574,27 @@ export function registerBaiyunShareExchangeInRecords(input: {
   record: BaiyunPendingShareExchange;
   now?: number;
 }) {
-  const existing = input.records.find((record) => record.id === input.record.id);
+  const now = input.now ?? input.record.createdAt;
+  const records = projectBaiyunShareResponseExpiry(input.records, now);
+  const existing = records.find((record) => record.id === input.record.id);
   if (existing) {
     return {
       created: false,
       record: existing,
-      records: [...input.records],
+      records,
     };
   }
   if (
     input.record.invitationKind === 'self_driven'
-    && !canRegisterBaiyunSelfDrivenShare(input.records, input.now ?? input.record.createdAt)
+    && !canRegisterBaiyunSelfDrivenShare(records, now)
   ) {
     return {
       created: false,
       record: undefined,
-      records: [...input.records],
+      records,
     };
   }
-  const records = [...input.records];
-  const active = getBaiyunActiveShareExchanges(records);
+  const active = getBaiyunActiveShareExchanges(records, undefined, now);
   if (
     input.record.invitationKind === 'you_invited'
     && active.length >= BAIYUN_MAX_PENDING_SHARES
@@ -526,7 +605,7 @@ export function registerBaiyunShareExchangeInRecords(input: {
       records[index] = {
         ...oldestInvited,
         state: 'unanswered',
-        resolvedAt: input.now ?? input.record.createdAt,
+        resolvedAt: now,
       };
     }
   }
@@ -552,6 +631,8 @@ export function resolveBaiyunShareResponsesInRecords(input: {
     input.responses.map((response) => [response.pendingShareId, response]),
   );
   const resolved: BaiyunPendingShareExchange[] = [];
+  // Validated responses may already be in flight when the deadline passes. Keep
+  // their original waiting-state guard, then expire only the untouched records.
   const records = input.records.map((record) => {
     const response = responseById.get(record.id);
     if (
@@ -567,5 +648,5 @@ export function resolveBaiyunShareResponsesInRecords(input: {
     resolved.push(next);
     return next;
   });
-  return { records, resolved };
+  return { records: projectBaiyunShareResponseExpiry(records, now), resolved };
 }

@@ -565,7 +565,11 @@ export async function generateNearStatus(input: {
           }, async () => {
             if (input.materials.chatSource) await readQwenChatSource(input.materials.chatSource, loadChatSessionMessage, input.connection);
             await assertTransportReady?.();
-          }); } catch (error) { if (isAiCostDeferred(error) || isQwenChatSourceDeferred(error)) { deferred = error;
+          });
+          if (opportunity?.handoff) await opportunity.onHandoffTransportPrepared();
+          } catch (error) {
+            if (opportunity?.handoff) await opportunity.onHandoffUnsent();
+            if (isAiCostDeferred(error) || isQwenChatSourceDeferred(error)) { deferred = error;
             interruptionReason = isAiCostDeferred(error) ? error.reason : 'qwen-chat-source-waiting'; } throw error; }
         },
         onTransportAttempt: transport => {

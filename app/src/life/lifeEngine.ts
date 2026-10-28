@@ -15,7 +15,7 @@ import { JUNLUO_DESIRE_VISIBLE_THRESHOLD } from './junluoDesireMetabolism';
 import { loadJunluoDesireSnapshot } from './junluoDesireRuntime';
 import { tryGenerateDream } from './dreamEngine';
 import { runRhythmTick } from './lifeRhythm';
-import { runSleepPlanTick } from './sleepPlanRuntime';
+import { runSleepPlanTick, createNaturalEarlyWakeOwner, completeNaturalEarlyWake } from './sleepPlanRuntime';
 import { runSocialDesireAction } from './socialAgent';
 import { runWebVoyageTick } from './webVoyage';
 import { executeLifeTickOnce } from './lifeTickExecutionOnce';
@@ -222,11 +222,19 @@ async function performLifeTick(options: LifeTickOptions): Promise<LifeTickResult
   };
   await markPeriodicComponent('drive').catch(() => undefined);
   const effectiveAutonomySettings = autonomySettings ?? defaultAutonomySettings;
-  const sleepPlanHandled = await runSleepPlanTick({ now, allowRequest: !localOnly }).catch(() => false);
+  const naturalEarlyWakeOwner = createNaturalEarlyWakeOwner(!localOnly);
+  let sleepPlanHandled = await runSleepPlanTick({ now, allowRequest: !localOnly, naturalEarlyWakeOwner }).catch(() => false);
+  const firstWake = await completeNaturalEarlyWake(naturalEarlyWakeOwner);
+  sleepPlanHandled = firstWake.handled || sleepPlanHandled;
+  let proactiveMessageInserted = firstWake.inserted;
   await (await import('./readingActivityRuntime')).runReadingActivityTick(now, !localOnly).catch(() => undefined);
   await (await import('../schedule/ownScheduleExecution')).runOwnScheduleExecution(now).catch(() => undefined);
   await (await import('./ownDayPlanRuntime')).runOwnDayPlanTick(now, !localOnly).catch(() => undefined);
-  await (await import('./sleepPlanRuntime')).reconcileSleepPlanLocally(Date.now()).catch(() => undefined);
+  await (await import('./sleepPlanRuntime')).reconcileSleepPlanLocally(Date.now(), undefined,
+    !localOnly, undefined, naturalEarlyWakeOwner).catch(() => undefined);
+  const localWake = await completeNaturalEarlyWake(naturalEarlyWakeOwner);
+  sleepPlanHandled = localWake.handled || sleepPlanHandled;
+  proactiveMessageInserted = Math.max(proactiveMessageInserted, localWake.inserted);
   // Existing startup/foreground/life opportunities own this low-frequency paper.
   // Local recovery remains possible even when automatic calls are disabled.
   void import('../posts/baiyunPostMemoryRuntime').then(async runtime => {
@@ -298,7 +306,6 @@ async function performLifeTick(options: LifeTickOptions): Promise<LifeTickResult
     now,
     profile,
   });
-  let proactiveMessageInserted = 0;
   await import('../gifts/giftReceptionRuntime').then(module => module.runGiftReceptionTick({
     now, allowRequest: !localOnly,
   })).catch(() => undefined);
@@ -311,6 +318,7 @@ async function performLifeTick(options: LifeTickOptions): Promise<LifeTickResult
       const proactiveResult = await runBudgetedAiCall('proactive', 'urgent', () =>
         maybeSendProactiveMessage({
           unifiedSchedulerHeld: true,
+          naturalEarlyWakeOwner,
           apiKey: options.apiKey,
           backupRestoreLeaseHeld: options.backupRestoreLeaseHeld,
           connection: options.connection,
@@ -318,11 +326,14 @@ async function performLifeTick(options: LifeTickOptions): Promise<LifeTickResult
         }),
         { shouldRecordSuccess: (value) => value > 0 },
       ).catch(() => null);
-      proactiveMessageInserted = proactiveResult?.ok ? proactiveResult.value : 0;
+      const freshWakeDelivered = await completeNaturalEarlyWake(naturalEarlyWakeOwner);
+      sleepPlanHandled = freshWakeDelivered.handled || sleepPlanHandled;
+      proactiveMessageInserted = (proactiveResult?.ok ? proactiveResult.value : 0)
+        + Math.max(proactiveMessageInserted, freshWakeDelivered.inserted);
     }
 
     // 后台一次只产出一类 AI 内容；前台仍可在主动消息后继续补齐到期的生活记录。
-    if (!backgroundAiTick || !proactiveMessageInserted) {
+    if (!sleepPlanHandled && (!backgroundAiTick || !proactiveMessageInserted)) {
       const slowTasks = [
         async () => resumeSleepingBaiyunPostReply(),
         async () => {

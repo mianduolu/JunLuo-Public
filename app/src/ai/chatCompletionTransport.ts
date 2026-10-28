@@ -14,6 +14,21 @@ export function normalizeChatProviderRequestId(value: unknown): string | undefin
   return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)
     ? value : undefined;
 }
+export function normalizeChatProviderHost(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value || value.length > 253) return undefined;
+  try {
+    const normalized = value.toLowerCase();
+    const hostname = new URL(`http://${normalized}`).hostname;
+    return hostname === normalized ? hostname : undefined;
+  } catch { return undefined; }
+}
+export function readChatProviderHost(url: string): string | undefined {
+  try {
+    const parsed = new URL(url.replace(/^https?:/iu, protocol => protocol.toLowerCase()));
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+      ? normalizeChatProviderHost(parsed.hostname) : undefined;
+  } catch { return undefined; }
+}
 export function getChatTransportErrorDetails(error: unknown) {
   try {
     const value = error as { name?: unknown; code?: unknown; cause?: { code?: unknown } } | null;

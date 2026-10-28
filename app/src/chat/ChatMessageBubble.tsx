@@ -39,6 +39,7 @@ type ChatMessageBubbleProps = {
   messageSelected: boolean;
   messageSelectionMode: boolean;
   memoryOrganizing: boolean;
+  notebookRecorded?: boolean;
   musicIsPlaying: boolean;
   musicShowCandidates: boolean;
   onLike: () => void;
@@ -80,6 +81,7 @@ export function ChatMessageBubble({
   messageSelected,
   messageSelectionMode,
   memoryOrganizing,
+  notebookRecorded = false,
   musicIsPlaying,
   musicShowCandidates,
   onLike,
@@ -188,6 +190,7 @@ export function ChatMessageBubble({
           <Text numberOfLines={1} style={[styles.messageTime, titleTextStyle]}>
             {formatChatBubbleDateTime(message.createdAt)}
           </Text>
+          {notebookRecorded ? <Text accessibilityLabel="已记入白云小本本" style={styles.reminderBadge}>✨</Text> : null}
           {showAssistantRoundLike && !messageSelectionMode && !assistantTechnicalFailure ? (
             <Pressable
               accessibilityLabel={assistantRoundLiked ? '取消喜欢这轮回复' : '喜欢这轮回复'}

@@ -2,10 +2,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { assistantLifeStateStorageBridge } from '../sync/syncAssistantLifeStateStorageBridge';
 import { relationshipAuthorizationStorageBridge } from '../sync/syncRelationshipAuthorizationStorageBridge';
 import { captureBackupRestoreDataEpoch, canCommitBackupRestoreDataEpoch, runBackupRestoreDataEpochCommit } from '../backup/backupRestoreCoordinator';
-import { recoverUnifiedContactSavedMessages } from './unifiedContactRuntime';
+import { recoverUnifiedContactSavedMessages, phoneLocalContactId } from './unifiedContactRuntime';
 import { recordContactScheduleRecoveryProvided } from './unifiedContactScheduleRecovery';
 import { RETIRED_SOCIAL_SHARE_QUEUE_KEY } from '../ai/retiredAssistantFeatureData';
-import { initialContactState, contactPauseAfterYou, finishContactOpportunity, runUnifiedContactStorageWrite, isContactPastMemorySource, contactMessageId, type ContactMotive, type ContactPause, type UnifiedContactState } from './unifiedContact';
+import { CONTACT_DAY_LIMIT, contactLocalDay, initialContactState, claimContactOpportunity, contactPauseAfterYou, finishContactOpportunity, recordContactMotiveSelection, runUnifiedContactStorageWrite, isContactPastMemorySource, contactMessageId, type ContactMotive, type ContactPause, type UnifiedContactState, type ContactOpportunity } from './unifiedContact';
+import type { SleepGreetingBoundary } from '../life/sleepPlanPolicy';
 import type { JunLuoToolAgentContinuationMessage } from '../tools/toolAgentLoop';
 import type { JunLuoToolResult } from '../tools';
 
@@ -36,6 +37,13 @@ export async function recoverStoredUnifiedContactMessages(epoch = captureBackupR
   await recoverUnifiedContactSavedMessages({ read: readUnifiedContactState,
     change: work => changeUnifiedContactState(work, epoch), readSaved: loadChatSessionMessage,
     recordSavedMaterials: async (op, message) => {
+      if (op.sleepGreeting?.deliveredAt !== undefined) {
+        const { recordSleepGreetingDelivery } = await import('../life/sleepPlanStore');
+        const greeting = op.sleepGreeting;
+        const receipt = await runBackupRestoreDataEpochCommit(epoch, () => recordSleepGreetingDelivery(
+          greeting, { sessionId: op.sessionId, messageId: message.id, deliveredAt: greeting.deliveredAt!, opportunityId: op.id }));
+        if (!receipt.committed) throw Error('sleep-epoch-stale');
+      }
       await recordContactWeeklyReviewProvided(op, message);
       await recordContactScheduleRecoveryProvided(op, message);
       if (message.id === contactMessageId(op, 0) && !op.pastMemoryUsageResult && op.sources.some(isContactPastMemorySource)) {
@@ -104,6 +112,118 @@ export function changeUnifiedContactState<T>(
     if (!saved.committed) throw new Error('unified-contact-epoch');
     return saved.value;
   });
+}
+
+/** The old C/D executor and ordinary contact share this one durable opportunity. */
+export async function beginSleepGreetingRequest(input: {
+  boundary: SleepGreetingBoundary; sessionId: string; messageId: string; epoch: number;
+  priorRequests: number; now?: number;
+  ordinary?: { candidate: ContactOpportunity; material: string };
+  sourceMessages?: ContactOpportunity['sourceMessages']; latestYouId?: string | null;
+}) {
+  const now = input.now ?? Date.now();
+  const token = `sleep-request:${input.boundary.episodeId}:${input.priorRequests}:${now}`;
+  return changeUnifiedContactState(state => {
+    let op = state.current;
+    const same = op?.sleepGreeting?.nightKey === input.boundary.nightKey
+      && op.sleepGreeting.episodeId === input.boundary.episodeId;
+    if (same && (op!.sessionId !== input.sessionId || op!.sleepGreeting!.messageId !== input.messageId || op!.epoch !== input.epoch)) throw Error('sleep-contact-stale');
+    const merge = op && op.status === 'ready' && op.requests === 0 && !op.messages.length
+      && !op.important && !op.phoneEmergency && !op.sleepGreeting
+      && op.id === input.ordinary?.candidate.id && op.transportState !== 'unknown' && op.transportState !== 'started';
+    if (op && op.status !== 'finished' && !same && !merge) throw Error('sleep-contact-busy');
+    if (same && op!.status === 'finished') throw Error('sleep-contact-ended');
+    const claimedOpportunity = !same;
+    if (claimedOpportunity) {
+      if (input.priorRequests > 0) throw Error('sleep-contact-legacy-unknown');
+      if (state.day === contactLocalDay(now) && state.used >= CONTACT_DAY_LIMIT) throw Error('sleep-contact-day-limit');
+      const proposed = input.ordinary?.candidate;
+      const base = merge ? op! : proposed && !proposed.important && !proposed.phoneEmergency
+        && !proposed.requests && proposed.status === 'ready' ? proposed : undefined;
+      if (base) base.status = 'finished';
+      op = { ...(base ?? {}), id: base?.id ?? phoneLocalContactId(input.sessionId, now, false),
+        sessionId: input.sessionId, createdAt: now, expiresAt: input.boundary.deadlineAt,
+        motives: base?.motives ?? [], sources: base?.sources ?? [], important: false,
+        epoch: input.epoch, latestYouId: base?.latestYouId ?? input.latestYouId ?? null,
+        sourceMessages: base?.sourceMessages ?? input.sourceMessages ?? [],
+        requests: 0, requestStartedAt: 0, retryStarted: false, failedAt: null, retryAt: null,
+        status: 'ready', messages: [], savedMessageIds: [], endedAt: null,
+        sleepGreeting: { ...input.boundary, messageId: input.messageId,
+          ...(base && input.ordinary ? { ordinaryMaterial: input.ordinary.material } : {}) } };
+      claimContactOpportunity(state, op);
+    }
+    if (!op || op.requests !== input.priorRequests || op.requests >= 3) throw Error('sleep-contact-request-count');
+    op.requestUndo = { token, requests: op.requests, requestStartedAt: op.requestStartedAt,
+      requestToken: op.requestToken, status: op.status, retryStarted: op.retryStarted,
+      claimedOpportunity, day: state.day };
+    op.requests += 1; op.requestToken = token; op.requestStartedAt = now;
+    op.status = 'requesting'; op.transportState = 'not_started'; op.reason = 'sleep_request_preparing';
+    return { id: op.id, token };
+  }, input.epoch);
+}
+
+export function markSleepGreetingTransport(handle: { id: string; token: string }, epoch: number,
+  transportState: 'unknown' | 'started') {
+  return changeUnifiedContactState(state => {
+    const op = state.current;
+    if (!op || op.id !== handle.id || op.requestToken !== handle.token || op.status === 'finished') throw Error('sleep-contact-stale');
+    op.transportState = transportState;
+    recordContactMotiveSelection(state);
+    if (transportState === 'started') op.requestUndo = undefined;
+  }, epoch);
+}
+
+export function releaseUnsentSleepGreeting(handle: { id: string; token: string }, epoch: number) {
+  return changeUnifiedContactState(state => {
+    const op = state.current, undo = op?.requestUndo;
+    if (!op || op.id !== handle.id || undo?.token !== handle.token || op.transportState !== 'not_started') return false;
+    op.requests = undo.requests; op.requestToken = undo.requestToken; op.requestStartedAt = undo.requestStartedAt;
+    op.retryStarted = undo.retryStarted; op.status = undo.status; op.requestUndo = undefined;
+    op.transportState = undo.requests ? 'started' : 'not_started';
+    if (undo.claimedOpportunity) {
+      if (state.day === undo.day) state.used = Math.max(0, state.used - 1);
+      op.status = 'finished'; op.endedAt = Date.now();
+    }
+    op.reason = 'request_not_started';
+    return true;
+  }, epoch);
+}
+
+export function retainSharedSleepGreeting(id: string, message: import('../ai/subjectiveMessages').SubjectiveMessage, epoch: number) {
+  return changeUnifiedContactState(state => {
+    const op = state.current;
+    if (!op || op.id !== id || !op.sleepGreeting || op.sleepGreeting.messageId !== message.id || op.status === 'finished') {
+      throw Error('sleep-contact-stale');
+    }
+    op.messages = [message.content]; op.status = 'saving'; op.requestUndo = undefined;
+    op.sleepGreeting.messageCreatedAt = message.createdAt;
+    op.transportState = 'started'; op.reason = 'body_ready';
+  }, epoch);
+}
+
+export function finishSharedSleepGreeting(id: string, epoch: number, reason: string) {
+  return changeUnifiedContactState(state => {
+    if (state.current?.id === id) finishContactOpportunity(state, Date.now(), reason);
+  }, epoch);
+}
+
+export function markSharedSleepGreetingDelivered(id: string, deliveredAt: number, epoch: number) {
+  return changeUnifiedContactState(state => {
+    const op = state.current;
+    if (op?.id !== id || !op.sleepGreeting) throw Error('sleep-contact-stale');
+    op.sleepGreeting.deliveredAt ??= deliveredAt;
+    if (!op.savedMessageIds.includes(op.sleepGreeting.messageId)) op.savedMessageIds.push(op.sleepGreeting.messageId);
+    return op.sleepGreeting.deliveredAt;
+  }, epoch);
+}
+
+/** A real C tool decision changes its own saved deadline, never a temporary wake deadline. */
+export function updateSharedBedtimeDeadline(id: string, deadlineAt: number, epoch: number) {
+  return changeUnifiedContactState(state => {
+    const op = state.current;
+    if (op?.id !== id || op.status === 'finished' || op.sleepGreeting?.phase !== 'prepare') throw Error('sleep-contact-stale');
+    op.expiresAt = deadlineAt; op.sleepGreeting.deadlineAt = deadlineAt;
+  }, epoch);
 }
 
 /** Restore already owns the exclusive window; neither the domain queue nor sync capture may be re-entered. */

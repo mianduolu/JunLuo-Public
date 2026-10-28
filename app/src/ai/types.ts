@@ -1,4 +1,5 @@
 import { canPurposeFallbackToChat, doesPurposeRequireDedicatedCapability, type ModelPurposeId } from './modelPurposeRegistry';
+import type { ConnectionPromptCacheMode } from './promptCacheRequest';
 
 export type AiProvider = 'openai-compatible';
 export type AiProviderPreset = 'deepseek' | 'qwen' | 'gemini' | 'ollama' | 'gateway' | 'custom';
@@ -29,6 +30,7 @@ export type AiConnection = {
   model: string;
   chatJsonOutputEnabled?: boolean;
   modelParameters?: AiModelParameters;
+  promptCacheMode?: ConnectionPromptCacheMode;
   contextWindowTokens?: number;
   contextCompressionEnabled?: boolean;
   contextCompressionThreshold?: number;
@@ -45,8 +47,10 @@ export const defaultContextCompressionSettings = {
 } as const;
 
 export function normalizeAiConnection(connection: AiConnection): AiConnection {
+  const { promptCacheMode, ...settings } = connection;
   return {
-    ...connection,
+    ...settings,
+    ...(promptCacheMode === 'ephemeral-first-system' ? { promptCacheMode } : {}),
     chatJsonOutputEnabled: connection.chatJsonOutputEnabled === true,
     contextWindowTokens: Math.max(4096, Math.round(connection.contextWindowTokens ?? 65536)),
     contextCompressionEnabled: connection.contextCompressionEnabled !== false,

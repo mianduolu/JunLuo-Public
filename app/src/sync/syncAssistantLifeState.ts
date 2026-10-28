@@ -296,6 +296,14 @@ function assertAssistantState(value: Record<string, unknown>) {
   }
 }
 
+function assertSleepGreetingReceipt(value: unknown) {
+  const receipt = recordOf(value, 'sleep greeting receipt');
+  assertKeys(receipt, ['sessionId', 'messageId', 'deliveredAt'], ['opportunityId'], 'sleep greeting receipt');
+  for (const key of ['sessionId', 'messageId', 'opportunityId'])
+    if (receipt[key] !== undefined) assertString(receipt[key], `sleep greeting ${key}`, 256);
+  assertTimestamp(receipt.deliveredAt, 'sleep greeting deliveredAt');
+}
+
 function assertLifeDay(value: Record<string, unknown>, entityId: string) {
   assertKeys(
     value,
@@ -355,11 +363,19 @@ function assertLifeDay(value: Record<string, unknown>, entityId: string) {
     if (plan.pendingSleep !== undefined) {
       const pending = recordOf(plan.pendingSleep, 'pending sleep');
       assertKeys(pending, ['id', 'kind', 'decidedAt', 'hardDeadlineAt', 'sessionId', 'turnId'],
-        ['sourceMessageIds', 'turnEndedAt', 'dueAt', 'round', 'roundStartedAt', 'roundDeadlineAt'], 'pending sleep');
+        ['sourceMessageIds', 'turnEndedAt', 'dueAt', 'round', 'roundStartedAt', 'roundDeadlineAt', 'greeting'], 'pending sleep');
       for (const key of ['id', 'sessionId', 'turnId']) assertString(pending[key], `pending sleep ${key}`, 256);
       assertEnum(pending.kind, ['sleep', 'return'], 'pending sleep kind');
       for (const key of ['decidedAt', 'hardDeadlineAt']) assertTimestamp(pending[key], `pending sleep ${key}`);
       for (const key of ['turnEndedAt', 'dueAt']) if (pending[key] !== undefined) assertTimestamp(pending[key], `pending sleep ${key}`);
+      if (pending.greeting !== undefined) {
+        const greeting = recordOf(pending.greeting, 'pending greeting');
+        assertKeys(greeting, ['fallbackAt', 'waitingUntil'], ['deliveredAt'], 'pending greeting');
+        for (const key of ['fallbackAt', 'waitingUntil', 'deliveredAt'])
+          if (greeting[key] !== undefined) assertTimestamp(greeting[key], `pending greeting ${key}`);
+        if (greeting.fallbackAt !== pending.hardDeadlineAt
+          || greeting.deliveredAt !== undefined && Number(greeting.waitingUntil) < Number(greeting.deliveredAt)) throw Error('invalid_pending_greeting');
+      }
       const hasRounds = ['round', 'roundStartedAt', 'roundDeadlineAt'].some(key => pending[key] !== undefined);
       if (hasRounds) {
         if (pending.round !== 1 && pending.round !== 2) throw new Error('invalid_pending_sleep_round');
@@ -371,8 +387,8 @@ function assertLifeDay(value: Record<string, unknown>, entityId: string) {
           || (pending.turnEndedAt === undefined) !== (pending.dueAt === undefined)
           || pending.turnEndedAt !== undefined && (Number(pending.turnEndedAt) < Number(pending.roundStartedAt)
             || Number(pending.turnEndedAt) > Number(pending.roundDeadlineAt)
-            || Number(pending.dueAt) < Number(pending.turnEndedAt)
-            || Number(pending.dueAt) > Number(pending.turnEndedAt) + 300000)) throw new Error('invalid_pending_sleep_time');
+            || pending.greeting === undefined && (Number(pending.dueAt) < Number(pending.turnEndedAt)
+              || Number(pending.dueAt) > Number(pending.turnEndedAt) + 300000))) throw new Error('invalid_pending_sleep_time');
       } else if (Number(pending.hardDeadlineAt) < Number(pending.decidedAt)
         || pending.turnEndedAt !== undefined && Number(pending.turnEndedAt) < Number(pending.decidedAt)
         || pending.dueAt !== undefined && (Number(pending.dueAt) < Number(pending.decidedAt)
@@ -387,7 +403,7 @@ function assertLifeDay(value: Record<string, unknown>, entityId: string) {
       const ids = new Set<string>();
       for (const value of plan.events) {
         const event = recordOf(value, 'sleep event');
-        assertKeys(event, ['id', 'kind', 'at'], ['sleepAt', 'wakeAt', 'until', 'sessionId', 'turnId', 'messageIds', 'toolCallId'], 'sleep event');
+        assertKeys(event, ['id', 'kind', 'at'], ['sleepAt', 'wakeAt', 'until', 'sessionId', 'turnId', 'messageIds', 'toolCallId', 'greeting', 'greetingOpportunityId'], 'sleep event');
         const id = assertString(event.id, 'sleep event id', 256);
         if (ids.has(id)) throw new Error('duplicate_sleep_event');
         ids.add(id);
@@ -395,6 +411,8 @@ function assertLifeDay(value: Record<string, unknown>, entityId: string) {
         assertTimestamp(event.at, 'sleep event at');
         for (const key of ['sleepAt', 'wakeAt', 'until']) if (event[key] !== undefined) assertTimestamp(event[key], `sleep event ${key}`);
         for (const key of ['sessionId', 'turnId', 'toolCallId']) if (event[key] !== undefined) assertString(event[key], `sleep event ${key}`, 256);
+        if (event.greeting !== undefined) assertSleepGreetingReceipt(event.greeting);
+        if (event.greetingOpportunityId !== undefined) assertString(event.greetingOpportunityId, 'sleep greeting opportunity id', 256);
         if (event.kind === 'schedule' && event.sleepAt === undefined && event.wakeAt === undefined) throw new Error('empty_sleep_schedule_event');
         if (event.messageIds !== undefined) {
           if (!Array.isArray(event.messageIds)) throw new Error('invalid_sleep_event_message_ids');
@@ -414,6 +432,8 @@ function assertLifeDay(value: Record<string, unknown>, entityId: string) {
       assertNullableString(opportunity.messageId, 'sleep opportunity messageId', 256);
       assertNullableString(opportunity.contextMessageId, 'sleep opportunity contextMessageId', 256);
       assertNullableTimestamp(opportunity.deliveredAt, 'sleep opportunity deliveredAt');
+      if (opportunity.sharedContactId !== undefined) assertString(opportunity.sharedContactId, 'sleep shared contact id', 256);
+      if (opportunity.greeting !== undefined) assertSleepGreetingReceipt(opportunity.greeting);
       if (opportunity.retryUsed !== undefined && typeof opportunity.retryUsed !== 'boolean') throw new Error('invalid_sleep_retry_used');
       if (opportunity.toolResult !== undefined) {
         const result = recordOf(opportunity.toolResult, 'sleep tool result');
@@ -674,8 +694,10 @@ function assertAfterglowParsedResult(value: unknown) {
       const emotions = object(affect.emotions, ['primary', 'secondary'], label);
       if (!Array.isArray(emotions.secondary) || emotions.secondary.length > 1) throw new Error(`${label}.emotions.secondary 无效。`);
       for (const item of [emotions.primary, ...emotions.secondary]) {
-        const emotion = object(item, ['id', 'strength', 'target'], label);
+        const emotion = recordOf(item, label);
+        assertKeys(emotion, ['id', 'strength', 'target'], ['reason'], label);
         for (const key of ['id', 'strength', 'target']) assertString(emotion[key], `${label}.${key}`, 256);
+        if (Object.hasOwn(emotion, 'reason') && emotion.reason !== null && typeof emotion.reason !== 'string') throw new Error(`${label}.reason 无效。`);
       }
     }
   }
@@ -984,7 +1006,9 @@ function assertAffectBasket(value: unknown) {
     const emotions = object(affect.emotions, ['primary', 'secondary'], 'affect emotions');
     if (!Array.isArray(emotions.secondary) || emotions.secondary.length > 1) throw new Error('affect secondary');
     for (const value of [emotions.primary, ...emotions.secondary]) {
-      const e = object(value, ['id', 'strength', 'target'], 'emotion');
+      const e = recordOf(value, 'emotion');
+      assertKeys(e, ['id', 'strength', 'target'], ['reason'], 'emotion');
+      if (Object.hasOwn(e, 'reason') && e.reason !== null && typeof e.reason !== 'string') throw new Error('emotion reason');
       assertEnum(e.id, BAIYUN_EMOTION_IDS, 'emotion id'); assertEnum(e.strength, ['soft', 'clear', 'strong'], 'emotion strength');
       assertEnum(e.target, ['I', 'you', 'other', 'situation'], 'emotion target');
     }
@@ -1281,10 +1305,13 @@ function assertNearStatusContinuation(value: unknown, run: Record<string, unknow
     for (const key of ['finishReason', 'reason']) if (request[key] !== undefined) text(request[key], key);
     if (request.transport !== undefined) {
       const transport = recordOf(request.transport, 'near continuation transport');
-      assertKeys(transport, ['startedAt', 'outcome'], ['finishedAt', 'httpStatus'], 'near continuation transport');
+      assertKeys(transport, ['startedAt', 'outcome'], ['finishedAt', 'httpStatus', 'offeredToolCount', 'toolCapabilitySource'], 'near continuation transport');
       assertTimestamp(transport.startedAt, 'near continuation transport start');
       if (transport.finishedAt !== undefined) assertTimestamp(transport.finishedAt, 'near continuation transport end');
       if (transport.httpStatus !== undefined) assertTimestamp(transport.httpStatus, 'near continuation HTTP status');
+      if (transport.offeredToolCount !== undefined) assertTimestamp(transport.offeredToolCount, 'near continuation offered tool count');
+      if (transport.toolCapabilitySource !== undefined) assertEnum(transport.toolCapabilitySource,
+        ['official_profile', 'verified_probe', 'protocol_default', 'disabled_default'], 'near continuation tool capability source');
       assertEnum(transport.outcome, ['started', 'response', 'http-error', 'network-error', 'timeout', 'aborted'], 'near continuation transport outcome');
     }
   }

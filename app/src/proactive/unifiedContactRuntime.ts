@@ -266,7 +266,7 @@ export async function recoverUnifiedContactSavedMessages(
   for (let index = 0; index < op.messages.length; index += 1) {
     const id = contactMessageId(op, index);
     const pendingPastMemoryUsage = index === 0 && op.sources.some(isContactPastMemorySource) && !op.pastMemoryUsageResult;
-    if (!op.scheduleRecovery?.events.length && !op.sources.some(ref => ref.kind === 'weekly_review') && op.savedMessageIds.includes(id)
+    if (!op.sleepGreeting && !op.scheduleRecovery?.events.length && !op.sources.some(ref => ref.kind === 'weekly_review') && op.savedMessageIds.includes(id)
       && !pendingPastMemoryUsage && (op.important || state.lastOrdinaryCurrentStateOffer?.opportunityId === op.id)) continue;
     const message = await p.readSaved(op.sessionId, id);
     if (!message) continue;

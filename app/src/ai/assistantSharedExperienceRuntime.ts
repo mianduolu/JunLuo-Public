@@ -375,6 +375,7 @@ async function perform(input: AssistantInnerStateUpdateInput, excluded = new Set
       attemptedAt: started[paper]!, requestId: `${operationId(activeBatch)}:${paper}:${activeBatch[paper].attempts}`,
       attemptOrdinal: activeBatch[paper].attempts, generationKey: activeBatch.generationKey,
       contextSource: 'afterglow', model: input.connection.model, status: result.status,
+      ...(paper === 'wants' ? { extraFields: result.value?.issues ?? result.parseIssues } : {}),
       persistenceStatus: result.status === 'success' ? 'pending' : 'interrupted',
       requests: [{ ...result.diagnostics, paper: 'inner', status: result.status, reason: result.reason }],
     }).catch(() => undefined);

@@ -20,6 +20,81 @@ function writeMetrics<T>(work: () => Promise<T>): Promise<T> {
 export type PromptCacheContextSource = PromptContextSource | (string & {});
 export type PromptCacheChannel = 'deepseek' | 'siliconflow' | 'other' | 'unknown';
 
+const CACHE_USAGE_SOURCES = ['prompt_cache_hit_tokens', 'prompt_tokens_details.cached_tokens',
+  'cached_tokens', 'cached_input_tokens', 'unreported'] as const;
+export type PromptCacheUsageSource = typeof CACHE_USAGE_SOURCES[number];
+export type PromptRequestPrefixDiagnostic = {
+  version: 1;
+  scopeFingerprint: string;
+  messageCount: number;
+  toolCount: number;
+  compared: boolean;
+  toolsChanged: boolean | null;
+  parametersChanged: boolean | null;
+  commonMessageCount: number | null;
+  firstDifferentMessageIndex: number | null;
+};
+// Observation only: retain hashes at the send boundary per scope, never request text.
+const requestPrefixBaselines = new Map<string, { messages: string[]; tools: string; parameters: string }>();
+
+function observeSerializedRequest(body: string, scope: readonly string[]): PromptRequestPrefixDiagnostic | undefined {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.messages)
+      || parsed.tools !== undefined && !Array.isArray(parsed.tools)) return undefined;
+    const { messages, tools, ...parameters } = parsed;
+    const digest = (value: unknown) => {
+      const text = JSON.stringify(value) ?? '';
+      return `${text.length}:${fingerprintPromptText(text)}`;
+    };
+    const next = { messages: (messages as unknown[]).map(digest), tools: digest(tools), parameters: digest(parameters) };
+    const scopeFingerprint = fingerprintPromptText(JSON.stringify(scope));
+    const previous = requestPrefixBaselines.get(scopeFingerprint);
+    let commonMessageCount = 0;
+    if (previous) {
+      while (commonMessageCount < Math.min(previous.messages.length, next.messages.length)
+        && previous.messages[commonMessageCount] === next.messages[commonMessageCount]) commonMessageCount += 1;
+    }
+    requestPrefixBaselines.delete(scopeFingerprint);
+    requestPrefixBaselines.set(scopeFingerprint, next);
+    if (requestPrefixBaselines.size > 16) requestPrefixBaselines.delete(requestPrefixBaselines.keys().next().value!);
+    return { version: 1, scopeFingerprint, messageCount: next.messages.length,
+      toolCount: Array.isArray(tools) ? tools.length : 0, compared: !!previous,
+      toolsChanged: previous ? previous.tools !== next.tools : null,
+      parametersChanged: previous ? previous.parameters !== next.parameters : null,
+      commonMessageCount: previous ? commonMessageCount : null,
+      firstDifferentMessageIndex: previous
+        && (commonMessageCount < next.messages.length || commonMessageCount < previous.messages.length)
+        ? commonMessageCount : null };
+  } catch { return undefined; } // Diagnostics must not affect sending or exception handling.
+}
+
+function readRequestPrefixDiagnostic(value: unknown): PromptRequestPrefixDiagnostic | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const d = value as PromptRequestPrefixDiagnostic;
+  if (d.version !== 1 || typeof d.scopeFingerprint !== 'string' || !/^[0-9a-f]{8}$/.test(d.scopeFingerprint)
+    || safeTokenCount(d.messageCount) === null || safeTokenCount(d.toolCount) === null
+    || typeof d.compared !== 'boolean'
+    || [d.toolsChanged, d.parametersChanged].some(item => item !== null && typeof item !== 'boolean')
+    || [d.commonMessageCount, d.firstDifferentMessageIndex].some(item => item !== null && safeTokenCount(item) === null)) return undefined;
+  return { version: 1, scopeFingerprint: d.scopeFingerprint, messageCount: d.messageCount,
+    toolCount: d.toolCount, compared: d.compared, toolsChanged: d.toolsChanged,
+    parametersChanged: d.parametersChanged, commonMessageCount: d.commonMessageCount,
+    firstDifferentMessageIndex: d.firstDifferentMessageIndex };
+}
+
+function readCacheUsageSource(value: unknown): PromptCacheUsageSource | undefined {
+  return CACHE_USAGE_SOURCES.includes(value as PromptCacheUsageSource) ? value as PromptCacheUsageSource : undefined;
+}
+
+function cacheUsageSource(usage?: PromptCacheUsageLike | null): PromptCacheUsageSource {
+  if (usage?.prompt_cache_hit_tokens != null) return 'prompt_cache_hit_tokens';
+  if (usage?.prompt_tokens_details?.cached_tokens != null) return 'prompt_tokens_details.cached_tokens';
+  if (usage?.cached_tokens != null) return 'cached_tokens';
+  if (usage?.cached_input_tokens != null) return 'cached_input_tokens';
+  return 'unreported';
+}
+
 export type PromptCacheUsageLike = {
   cached_input_tokens?: number;
   cached_tokens?: number;
@@ -62,6 +137,8 @@ export type PromptCacheMetricRecord = {
   channel?: PromptCacheChannel;
   completionTokens?: number | null;
   requestStartedAt?: number;
+  cacheUsageSource?: PromptCacheUsageSource;
+  requestPrefix?: PromptRequestPrefixDiagnostic;
   scheduleRequest?: ScheduleRequestDiagnostic;
   stablePrefixVersion?: 2;
   promptTokens: number;
@@ -78,6 +155,7 @@ export type PromptCacheMetricInput = Omit<PromptCacheMetricRecord, 'createdAt' |
 };
 
 export type PromptCacheMetricsGroup = {
+  latestRequestDiagnostic?: Pick<PromptCacheMetricRecord, 'createdAt' | 'cacheUsageSource' | 'requestPrefix'>;
   averageHitRate: number | null;
   contextProfile: string;
   contextSource: string;
@@ -227,6 +305,8 @@ function readRecord(value: unknown): PromptCacheMetricRecord | null {
       ? record.channel : 'unknown' as const }),
     ...(record.completionTokens === undefined ? {} : { completionTokens: safeTokenCount(record.completionTokens) }),
     ...(safeTokenCount(record.requestStartedAt) === null ? {} : { requestStartedAt: record.requestStartedAt }),
+    ...(readCacheUsageSource(record.cacheUsageSource) ? { cacheUsageSource: readCacheUsageSource(record.cacheUsageSource) } : {}),
+    ...(readRequestPrefixDiagnostic(record.requestPrefix) ? { requestPrefix: readRequestPrefixDiagnostic(record.requestPrefix) } : {}),
     scheduleRequest: record.contextSource === 'schedule.companion' ? readScheduleRequestDiagnostic(record.scheduleRequest) : undefined,
     ...(record.stablePrefixVersion === 2 ? { stablePrefixVersion: 2 as const } : {}),
     promptTokens,
@@ -306,6 +386,8 @@ async function appendPromptCacheMetric(input: PromptCacheMetricInput, createdAt:
     ...(input.channel === undefined ? {} : { channel: input.channel }),
     ...(input.completionTokens === undefined ? {} : { completionTokens: input.completionTokens }),
     ...(input.requestStartedAt === undefined ? {} : { requestStartedAt: input.requestStartedAt }),
+    ...(readCacheUsageSource(input.cacheUsageSource) ? { cacheUsageSource: readCacheUsageSource(input.cacheUsageSource) } : {}),
+    ...(readRequestPrefixDiagnostic(input.requestPrefix) ? { requestPrefix: readRequestPrefixDiagnostic(input.requestPrefix) } : {}),
     scheduleRequest: input.contextSource === 'schedule.companion' ? readScheduleRequestDiagnostic(input.scheduleRequest) : undefined,
     ...(input.stablePrefixVersion === undefined ? {} : { stablePrefixVersion: input.stablePrefixVersion }),
     promptTokens: input.promptTokens,
@@ -351,6 +433,7 @@ export async function recordPromptCacheMetricFromResponseUsage(options: {
     channel: promptCacheChannelForBaseUrl(options.baseUrl),
     completionTokens: safeTokenCount(options.usage?.completion_tokens),
     requestStartedAt: options.requestStartedAt,
+    cacheUsageSource: cacheUsageSource(options.usage),
     stablePrefixVersion: 2,
     stablePrefixFingerprint: stablePrefixText ? fingerprintPromptText(`${options.model ?? ''}\n${stablePrefixText}`) : undefined,
     stablePrefixTokens: stablePrefixText ? estimateTextTokens(stablePrefixText) : 0,
@@ -363,7 +446,8 @@ export function beginPromptCacheMetric(options: {
   breakdown?: PromptTokenBreakdown;
   contextProfile: PromptContextProfile | (string & {});
   contextSource: PromptCacheContextSource;
-  connection: { model: string; baseUrl: string };
+  connection: { id?: string; model: string; baseUrl: string };
+  requestKind?: string;
   stablePrefixText?: string;
   now?: number;
 }) {
@@ -371,7 +455,14 @@ export function beginPromptCacheMetric(options: {
   let usage: PromptCacheUsageLike | undefined;
   let finished = false;
   let completion: Promise<PromptCacheMetricRecord | undefined> | undefined;
+  let requestPrefix: PromptRequestPrefixDiagnostic | undefined;
   return {
+    observeSerializedRequest(body: string) {
+      if (finished || requestPrefix) return;
+      requestPrefix = observeSerializedRequest(body, [options.connection.id ?? '',
+        options.connection.baseUrl.trim().replace(/\/+$/u, ''), options.connection.model.trim(),
+        String(options.contextSource), String(options.contextProfile), options.requestKind ?? 'unknown']);
+    },
     recordUsage(value: unknown) {
       if (!finished && value && typeof value === 'object' && !Array.isArray(value)) {
         const next = value as PromptCacheUsageLike;
@@ -392,6 +483,7 @@ export function beginPromptCacheMetric(options: {
         contextProfile: options.contextProfile, contextSource: options.contextSource,
         channel: promptCacheChannelForBaseUrl(options.connection.baseUrl), model: options.connection.model.trim(),
         completionTokens: safeTokenCount(usage?.completion_tokens), requestStartedAt,
+        cacheUsageSource: cacheUsageSource(usage), requestPrefix,
         scheduleRequest: readScheduleRequestDiagnostic(scheduleRequest),
         stablePrefixVersion: 2,
         stablePrefixTokens: prefix ? estimateTextTokens(prefix) : 0,
@@ -470,6 +562,11 @@ export async function loadPromptCacheMetricsSummary(options: { sinceMs?: number 
     group.missTokens += knownCache ? record.missTokens! : 0;
     group.knownCacheRequestCount += knownCache ? 1 : 0;
     group.requestCount += 1;
+    if ((record.cacheUsageSource || record.requestPrefix)
+      && (!group.latestRequestDiagnostic || record.createdAt >= group.latestRequestDiagnostic.createdAt)) {
+      group.latestRequestDiagnostic = { createdAt: record.createdAt,
+        cacheUsageSource: record.cacheUsageSource, requestPrefix: record.requestPrefix };
+    }
     group.stablePrefixChangedCount += knownPrefix && record.stablePrefixChanged ? 1 : 0;
     group.stablePrefixTokens = Math.max(group.stablePrefixTokens, knownPrefix ? record.stablePrefixTokens : 0);
     groupsByKey.set(key, group);

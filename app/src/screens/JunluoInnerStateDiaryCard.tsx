@@ -70,6 +70,16 @@ function ProgressRow({ label, value, note, signed }: { label: string; value: num
   );
 }
 
+function EmotionRecord({ entry }: { entry: NonNullable<JunluoAffectStateV1['emotions']['primary']> }) {
+  return <>
+    <Text style={styles.restSources}>{emotionStrengthAndTarget(entry)}</Text>
+    {Number.isFinite(entry.occurredAt) && entry.occurredAt > 0 && entry.occurredAt <= Date.now()
+      ? <Text style={styles.restSources}>记录时间：{new Date(entry.occurredAt).toLocaleString('zh-CN')}</Text> : null}
+    <Text style={styles.restSources}>当时记下的缘由：{typeof entry.reason === 'string' && entry.reason.trim()
+      ? entry.reason : '尚未记下具体缘由'}</Text>
+  </>;
+}
+
 export function JunluoInnerStateDiaryCard({ refreshVersion }: { refreshVersion: number }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [readStatus, setReadStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -121,14 +131,14 @@ export function JunluoInnerStateDiaryCard({ refreshVersion }: { refreshVersion: 
         <View style={styles.metricBox}>
           <Text style={styles.metricLabel}>主要感受</Text>
           <Text style={[styles.metricValue, styles.emotionValue]}>{emotionLabel(affect.emotions.primary?.emotionId)}</Text>
-          {affect.emotions.primary ? <Text style={styles.restSources}>{emotionStrengthAndTarget(affect.emotions.primary)}</Text> : null}
+          {affect.emotions.primary ? <EmotionRecord entry={affect.emotions.primary} /> : null}
         </View>
         <View style={styles.metricBox}>
           <Text style={styles.metricLabel}>还混着一点</Text>
           <Text style={[styles.metricValue, styles.emotionValue]}>
             {secondaryEmotion ? emotionLabel(secondaryEmotion.emotionId) : '没有额外记录'}
           </Text>
-          {secondaryEmotion ? <Text style={styles.restSources}>{emotionStrengthAndTarget(secondaryEmotion)}</Text> : null}
+          {secondaryEmotion ? <EmotionRecord entry={secondaryEmotion} /> : null}
         </View>
       </View>
 

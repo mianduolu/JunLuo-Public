@@ -169,6 +169,20 @@ async function runOnce(now: number, allowRequest: boolean) {
         }
       } catch { /* The same stable batch is retried locally, never regenerated. */ }
     }
+    if (run!.saveAttempts >= 4) {
+      if (!canCommitBackupRestoreDataEpoch(epoch) || !await current(false)) return;
+      let confirmed: NonNullable<OwnDayPlanRun['batch']>;
+      try { confirmed = await reconcileOwnedDayPlanBatch(run!.batch!); }
+      catch { return; } // Keep saving when the final receipt is unreadable; the original recovery checks it again.
+      if (!canCommitBackupRestoreDataEpoch(epoch) || !await current(false)) return;
+      try {
+        await update({ batch: confirmed });
+        if (confirmed.entries.every(entry => entry.saved)) {
+          await finish();
+          return;
+        }
+      } catch { return; } // A failed final receipt keeps its saved progress for the original local recovery.
+    }
     const remaining = run!.batch!.entries.filter(entry => !entry.saved);
     const reason = remaining.every(ownScheduleEntryIsFinal) ? 'schedule-adjustment-rejected'
       : remaining.some(entry => entry.error === 'schedule-duration-context-unavailable') ? 'schedule-duration-context-unavailable'

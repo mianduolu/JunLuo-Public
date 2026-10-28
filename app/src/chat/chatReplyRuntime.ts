@@ -154,6 +154,8 @@ import {
   type SleepReplyClaim,
 } from './sleepInteraction';
 import { loadJunluoDesirePromptPaper } from '../life/junluoDesireRuntime';
+import { loadJunluoAffectState } from '../life/junluoInnerStateStore';
+import { formatPreviousAffectForChat } from '../ai/assistantAffectPaper';
 import {
   commitDreamSurface,
   prepareDreamSurfaceInstruction,
@@ -251,6 +253,8 @@ const EMPTY_BAIYUN_PROMPT_CONTEXT = {
   settlementItems: [],
   instruction: '',
   fixedInstruction: 'pendingShares=[]',
+  expiredShareItems: [],
+  expiredShareInstruction: '',
 } as const;
 
 type MutableLatestRef<T> = { current: T };
@@ -563,6 +567,7 @@ export function createChatReplyController({
       desirePaper,
       intimacySafety,
       pendingShareContext,
+      previousAffect,
     ] = await Promise.all([
       wishMode ? Promise.resolve({ events: [], links: [], available: false }) : loadChatContinuityPlanningContext(readOnly),
       retryTransientDatabaseLock(() => loadJunluoDesirePromptPaper(undefined, readOnly)),
@@ -583,6 +588,7 @@ export function createChatReplyController({
             });
             return EMPTY_BAIYUN_PROMPT_CONTEXT;
           }),
+      useStoredRequestHistory ? loadJunluoAffectState(true).catch(() => null) : Promise.resolve(null),
     ]);
     if (!hasCurrentReplyDataEpoch()) return false;
     const safeWordInputMessage = options.interactionKind === BAIYUN_POKE_INTERACTION_KIND
@@ -946,6 +952,7 @@ export function createChatReplyController({
     const musicPlaybackEvents = musicRead?.ok ? musicRead.value : [];
     const visibleOnlyResponseInstructions = [
       trustedLifeStateInstruction,
+      formatPreviousAffectForChat(previousAffect, replyTiming.startedAt),
       unifiedContactHandoff?.material ?? '',
       webShareHandoff?.instruction ?? '',
       desirePaper,
@@ -961,6 +968,7 @@ export function createChatReplyController({
       pendingShareContext.fixedItems.length
         ? `${BAIYUN_CHAT_FIXED_SHARE_RESPONSE_GUIDANCE_PROTOCOL}\n\n${pendingShareContext.fixedInstruction}`
         : '',
+      pendingShareContext.expiredShareInstruction,
     ];
     type ResponseInstructionScope = 'full' | 'visible_only';
     const buildOrdinaryResponseInstruction = (

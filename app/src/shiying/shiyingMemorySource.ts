@@ -3,7 +3,7 @@ import type { MemorySourceRefInput } from '../memory/memoryStore';
 import { stableMemoryHash } from '../memory/memoryAtomicity';
 import { createShiyingRecordContentHash, parseShiyingRecordV1, type ShiyingRecordV1 } from './shiyingJournalContract';
 import type { ShiyingRecordImageNoteV1 } from './shiyingImageNoteContract';
-import { createShiyingImageNoteResultHash } from './shiyingImageNoteContract';
+import { createShiyingImageNoteResultHash, deserializeShiyingRecordImageNoteV1 } from './shiyingImageNoteContract';
 
 export const SHIYING_MEMORY_SOURCE_PREFIX = 'shiying-source-v1:';
 export type ShiyingMemoryPart = 'body' | 'image_note';
@@ -14,8 +14,10 @@ export type ShiyingMemorySnapshot = {
   recordContentHash: string; materialHash: string; body: string; bodyVersion: string;
   imageNote: { id: string; body: string; version: string; createdAt: number } | null;
 };
+type ShiyingMemoryOriginal = { record: ShiyingRecordV1; note: ShiyingRecordImageNoteV1 | null; jobSkipped?: boolean };
 export type ShiyingMemoryOriginalReader = {
-  readRecord(id: string): Promise<{ record: ShiyingRecordV1; note: ShiyingRecordImageNoteV1 | null; jobSkipped?: boolean } | null>;
+  readRecord(id: string): Promise<ShiyingMemoryOriginal | null>;
+  readRecords?(ids: readonly string[], options?: { signal?: AbortSignal }): Promise<ReadonlyMap<string, ShiyingMemoryOriginal>>;
   listFinalizedRecordIds(): Promise<string[]>;
 };
 export type ShiyingMemoryBinding = ShiyingMemoryIdentity & {
@@ -51,13 +53,42 @@ export function shiyingMemoryOccurrenceKey(value: { recordId: string } | string)
 }
 async function nativeReader(): Promise<ShiyingMemoryOriginalReader> {
   const { runShiyingDatabaseOperation } = await import('./shiyingDatabase');
-  const { loadShiyingRecordWithDatabase } = await import('./shiyingJournalStore');
+  const { loadShiyingRecordWithDatabase, shiyingRecordFromDatabaseRows } = await import('./shiyingJournalStore');
   const { loadShiyingRecordImageNoteWithDatabase } = await import('./shiyingImageNoteStore');
   return {
     readRecord: id => runShiyingDatabaseOperation(async db => {
       const record = await loadShiyingRecordWithDatabase(db, id);
       if (!record) return null;
       return { record, note: await loadShiyingRecordImageNoteWithDatabase(db, id) };
+    }),
+    readRecords: (ids, options) => runShiyingDatabaseOperation(async db => {
+      assertIndexReadCurrent(options?.signal);
+      const keys = JSON.stringify(ids);
+      const rows = await db.getAllAsync<Record<string, unknown> & { id: string }>(
+        'SELECT * FROM shiying_records WHERE id IN (SELECT value FROM json_each(?));', keys);
+      assertIndexReadCurrent(options?.signal);
+      const images = await db.getAllAsync<Record<string, unknown> & { record_id: string }>(
+        'SELECT * FROM shiying_record_images WHERE record_id IN (SELECT value FROM json_each(?)) ORDER BY record_id, ordinal;', keys);
+      assertIndexReadCurrent(options?.signal);
+      const notes = await db.getAllAsync<{ record_id: string; payload_json: string }>(
+        'SELECT record_id,payload_json FROM shiying_record_image_notes WHERE record_id IN (SELECT value FROM json_each(?));', keys);
+      assertIndexReadCurrent(options?.signal);
+      const recordsById = new Map(rows.map(row => [row.id, row]));
+      const imagesById = new Map<string, typeof images>();
+      for (const image of images) {
+        const group = imagesById.get(image.record_id) ?? [];
+        group.push(image); imagesById.set(image.record_id, group);
+      }
+      const notesById = new Map(notes.map(note => [note.record_id, note.payload_json]));
+      const originals = new Map<string, ShiyingMemoryOriginal>();
+      for (const id of ids) {
+        const row = recordsById.get(id);
+        if (!row) continue;
+        const record = shiyingRecordFromDatabaseRows(row, imagesById.get(id) ?? []);
+        const note = notesById.get(id);
+        originals.set(id, { record, note: note === undefined ? null : deserializeShiyingRecordImageNoteV1(note) });
+      }
+      return originals;
     }),
     listFinalizedRecordIds: () => runShiyingDatabaseOperation(async db => (await db.getAllAsync<{ id: string }>(
       "SELECT id FROM shiying_records WHERE status='finalized' ORDER BY finalized_at,created_at,id")).map(row => row.id)),
@@ -70,6 +101,9 @@ async function reader() {
 export async function loadShiyingMemorySnapshot(recordId: string): Promise<ShiyingMemorySnapshot | null> {
   if (!uuid.test(recordId)) return null;
   const original = await (await reader()).readRecord(recordId);
+  return snapshotFromOriginal(recordId, original);
+}
+async function snapshotFromOriginal(recordId: string, original: ShiyingMemoryOriginal | null): Promise<ShiyingMemorySnapshot | null> {
   if (!original) return null;
   const record = parseShiyingRecordV1(original.record);
   if (record.id !== recordId || record.status !== 'finalized') return null;
@@ -165,14 +199,34 @@ export function replaceShiyingMemorySourceRefs(previous: readonly MemorySourceRe
 }
 export async function loadShiyingMemoryIndexSource(id: string): Promise<ShiyingMemoryIndexSource | null> {
   const snapshot = await loadShiyingMemorySnapshot(id);
+  return indexSourceFromSnapshot(id, snapshot);
+}
+function indexSourceFromSnapshot(id: string, snapshot: ShiyingMemorySnapshot | null): ShiyingMemoryIndexSource | null {
   if (!snapshot) return null;
   return { id, recordDate: snapshot.recordDate, materialHash: snapshot.materialHash,
     sourceContentHash: snapshot.recordContentHash, updatedAt: snapshot.updatedAt,
     indexText: [snapshot.body, snapshot.imageNote?.body].filter(Boolean).join('\n\n') };
 }
-export async function loadShiyingMemoryIndexSources(ids: readonly string[]) {
+function assertIndexReadCurrent(signal?: AbortSignal) {
+  if (signal?.aborted) throw Object.assign(new Error('embedding-cancelled'), { name: 'AbortError' });
+}
+export async function loadShiyingMemoryIndexSources(ids: readonly string[], options: { signal?: AbortSignal } = {}) {
+  assertIndexReadCurrent(options.signal);
   const result = new Map<string, ShiyingMemoryIndexSource>();
-  for (const id of new Set(ids)) { const source = await loadShiyingMemoryIndexSource(id); if (source) result.set(id, source); }
+  const keys = [...new Set(ids)].filter(id => uuid.test(id));
+  if (!keys.length) return result;
+  const currentReader = await reader();
+  assertIndexReadCurrent(options.signal);
+  const originals = currentReader.readRecords ? await currentReader.readRecords(keys, options) : undefined;
+  assertIndexReadCurrent(options.signal);
+  for (const id of keys) {
+    assertIndexReadCurrent(options.signal);
+    const source = originals
+      ? indexSourceFromSnapshot(id, await snapshotFromOriginal(id, originals.get(id) ?? null))
+      : await loadShiyingMemoryIndexSource(id);
+    assertIndexReadCurrent(options.signal);
+    if (source) result.set(id, source);
+  }
   return result;
 }
 export async function listShiyingMemoryIndexSourceKeys(options: { after?: { id: string; updatedAt: number }; limit?: number } = {}) {

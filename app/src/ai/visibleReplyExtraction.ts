@@ -746,6 +746,19 @@ function extractVisibleReplyFromRawCore(input: {
   if (input.expectedStructure === 'single_root_json') {
     const rawWithoutFenceNormalization = normalizeVisibleReplyCharacters(input.raw);
     if (/^```/u.test(rawWithoutFenceNormalization)) {
+      const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(rawWithoutFenceNormalization);
+      if (source === 'direct_content' && fence) {
+        try {
+          // A closed fence is transport formatting, not permission to adopt its machine fields.
+          JSON.parse(fence[1]);
+          const visible = extractVisibleReplyFromRawCore({ ...input, raw: fence[1] });
+          if (visible.status === 'visible') {
+            return { ...visible, raw: rawWithoutFenceNormalization, hadOutsideText: true };
+          }
+        } catch {
+          // Keep incomplete or malformed fenced payloads on the original rejection path.
+        }
+      }
       return result({
         source,
         status: 'structure_invalid',
@@ -892,6 +905,12 @@ function extractVisibleReplyFromRawCore(input: {
           }
         } catch {
           // An incomplete or malformed object still has no readable messages.
+        }
+      }
+      if (source === 'direct_content' && !normalized.includes('```')) {
+        const completeMessages = extractCompleteReasoningMessages(normalized);
+        if (!completeMessages.conflicting && completeMessages.reply) {
+          return { ...completeMessages.reply, source, raw: normalized, hadOutsideText: true };
         }
       }
       return result({
@@ -1194,6 +1213,54 @@ function collectTopLevelJsonObjects(raw: string) {
   return candidates;
 }
 
+/** Recover only explicit, complete reply arrays; never adopt the surrounding reasoning or actions. */
+function extractCompleteReasoningMessages(raw: string): {
+  reply?: VisibleReplyExtractionResult; conflicting: boolean; incompleteContainer: boolean;
+} {
+  if (STRUCTURAL_TAG_PATTERN.test(raw)) return { conflicting: false, incompleteContainer: false };
+  let cursor = 0;
+  let incompleteContainer = false;
+  let unreadableReplyContainer = false;
+  let selected: string[] | undefined;
+  let selectedKey: string | undefined;
+  while (cursor < raw.length) {
+    // Skip quoted examples and whole outer containers, including arrays. Nested objects are not reply roots.
+    if (raw[cursor] === '"') {
+      let closed = false;
+      while (++cursor < raw.length) {
+        if (raw[cursor] === '\\') cursor += 1;
+        else if (raw[cursor] === '"') { cursor += 1; closed = true; break; }
+      }
+      if (!closed) { incompleteContainer = true; break; }
+      continue;
+    }
+    if (raw[cursor] !== '{' && raw[cursor] !== '[') { cursor += 1; continue; }
+    const end = findJsonContainerEnd(raw, cursor);
+    if (end === undefined) { incompleteContainer = true; break; }
+    const candidateRaw = raw.slice(cursor, end);
+    cursor = end;
+    let parsed: unknown;
+    try { parsed = JSON.parse(candidateRaw) as unknown; }
+    catch {
+      if (/^\{\s*"messages"\s*:/u.test(candidateRaw)) unreadableReplyContainer = true;
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+      || !Object.prototype.hasOwnProperty.call(parsed, 'messages')) continue;
+    const values = (parsed as { messages?: unknown }).messages;
+    const messages = Array.isArray(values) ? normalizeMessages(values) : undefined;
+    if (!messages) continue;
+    const key = JSON.stringify(messages);
+    if (selectedKey !== undefined && selectedKey !== key) return { conflicting: true, incompleteContainer };
+    selected = messages;
+    selectedKey = key;
+  }
+  return { conflicting: false, incompleteContainer, reply: selected && !unreadableReplyContainer ? result({
+    source: 'reasoning_marked_visible', status: 'visible', messages: selected,
+    raw: JSON.stringify({ messages: selected }), structureVariant: 'json_messages', hadOutsideText: true,
+  }) : undefined };
+}
+
 function extractVisibleReplyFromReasoning(
   raw: string,
   expectedStructure: VisibleReplyExpectedStructure,
@@ -1209,6 +1276,10 @@ function extractVisibleReplyFromReasoning(
     });
   }
 
+  const completeMessages = extractCompleteReasoningMessages(normalized);
+  if (completeMessages.conflicting) {
+    return result({ source: 'reasoning_marked_visible', status: 'structure_invalid', failureReason: 'messages_malformed' });
+  }
   const whole = extractVisibleReplyFromRaw({
     raw: normalized,
     source: 'reasoning_marked_visible',
@@ -1216,6 +1287,10 @@ function extractVisibleReplyFromReasoning(
     expectedStructure,
   });
   if (whole.status === 'visible') return whole;
+  if (completeMessages.incompleteContainer) {
+    return completeMessages.reply
+      ?? result({ source: 'reasoning_marked_visible', status: 'structure_invalid', failureReason: 'messages_malformed' });
+  }
 
   let invalidCandidate = whole.status === 'structure_invalid' ? whole : undefined;
   if (expectedStructure === 'single_root_json') {
@@ -1235,6 +1310,7 @@ function extractVisibleReplyFromReasoning(
       if (candidate.status === 'visible') return candidate;
       if (candidate.status === 'structure_invalid') invalidCandidate = candidate;
     }
+    if (completeMessages.reply) return completeMessages.reply;
     return invalidCandidate
       ?? result({
         source: 'reasoning_marked_visible',
@@ -1294,6 +1370,7 @@ function extractVisibleReplyFromReasoning(
     if (candidate.status === 'structure_invalid') invalidCandidate = candidate;
   }
 
+  if (completeMessages.reply) return completeMessages.reply;
   return invalidCandidate
     ?? result({
       source: 'reasoning_marked_visible',

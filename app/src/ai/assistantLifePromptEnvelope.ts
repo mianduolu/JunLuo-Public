@@ -8,6 +8,7 @@ import {
   type PromptCacheUsageLike,
 } from './promptCacheMetrics';
 import { recordPromptRuntimeSnapshot } from './promptDiagnostics';
+import { applyConnectionPromptCacheToRequestBody } from './promptCacheRequest';
 import {
   SUBJECTIVE_IDENTITY_PROTOCOL,
   type ApiChatMessage,
@@ -283,6 +284,7 @@ export async function fetchAssistantLifeCompletion({
       await onRequestStart?.(prepareTransport);
       // Legacy callers do not use admission; still refresh after their preflight.
       if (!prepared) await prepareTransport();
+      body = applyConnectionPromptCacheToRequestBody(body, connection.promptCacheMode);
       requestSignal = createAssistantLifeRequestSignal(signal, timeoutMs);
       // Admission is durable now. Preserve a last-moment cancellation on the
       // actual fetch instead of inventing an unsent refund after sync capture.
@@ -293,6 +295,7 @@ export async function fetchAssistantLifeCompletion({
       report();
       metric = beginPromptCacheMetric({ connection, contextProfile: envelope.contextProfile,
         contextSource: metricContextSource ?? contextSource, stablePrefixText: envelope.stablePrefixText });
+      metric.observeSerializedRequest(body);
       response = await fetch(`${connection.baseUrl.trim().replace(/\/+$/, '')}/chat/completions`, {
         body,
         headers: { Authorization: `Bearer ${apiKey.trim()}`, 'Content-Type': 'application/json' },

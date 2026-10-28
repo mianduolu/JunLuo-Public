@@ -66,6 +66,7 @@ export type AiLogicalConnection = {
   portableBaseUrl?: string;
   chatJsonOutputEnabled: boolean;
   modelParameters?: AiLogicalModelParameters;
+  promptCacheMode?: 'ephemeral-first-system';
   contextWindowTokens: number;
   contextCompressionEnabled: boolean;
   contextCompressionThreshold: number;
@@ -310,7 +311,7 @@ function assertConnection(value: unknown) {
       'contextCompressionByMessageCount',
       'contextCompressionMessageThreshold',
     ],
-    ['portableBaseUrl', 'modelParameters'],
+    ['portableBaseUrl', 'modelParameters', 'promptCacheMode'],
     'ai.logical-config connection',
   );
   assertConnectionId(record.connectionId, 'connection.connectionId');
@@ -342,6 +343,9 @@ function assertConnection(value: unknown) {
   );
   if (record.modelParameters !== undefined) {
     assertModelParameters(record.modelParameters);
+  }
+  if (record.promptCacheMode !== undefined) {
+    expect(record.promptCacheMode === 'ephemeral-first-system', 'connection.promptCacheMode 无效。');
   }
   assertInteger(
     record.contextWindowTokens,

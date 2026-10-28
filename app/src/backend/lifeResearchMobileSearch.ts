@@ -1,3 +1,5 @@
+import { withRequestBodyDeadline } from '../utils/requestBodyDeadline';
+
 export type MobileSearchEngineRole = 'primary' | 'fallback';
 
 export type MobileSearchResult = {
@@ -164,23 +166,14 @@ async function fetchWithMobileSearchTimeout(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  onResponse?: (response: Response) => void,
 ) {
-  const controller = new AbortController();
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<Response>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      controller.abort();
-      reject(new Error('timeout'));
-    }, timeoutMs);
-  });
-  try {
-    return await Promise.race([
-      fetcher(url, buildMobileSearchRequestInit(init, controller.signal)),
-      timeout,
-    ]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
+  return withRequestBodyDeadline(async signal => {
+    const response = await fetcher(url, buildMobileSearchRequestInit(init, signal));
+    if (signal.aborted) throw new Error('timeout');
+    onResponse?.(response);
+    return { response, html: response.ok ? await response.text() : undefined };
+  }, timeoutMs);
 }
 
 export async function fetchMobileSearchHtml(
@@ -202,13 +195,15 @@ export async function fetchMobileSearchHtml(
     attemptCount = attempt + 1;
     await throttleMobileSearchHost(url, minHostDelayMs, wait);
     try {
-      const response = await fetchWithMobileSearchTimeout(fetcher, url, {}, timeoutMs);
+      const { response, html } = await fetchWithMobileSearchTimeout(fetcher, url, {}, timeoutMs, response => {
+        httpStatus = response.status;
+      });
       httpStatus = response.status;
       if (response.ok) {
         return {
           attemptCount,
           elapsedMs: Date.now() - startedAt,
-          html: await response.text(),
+          html,
           httpStatus,
           ok: true,
           triedAt,

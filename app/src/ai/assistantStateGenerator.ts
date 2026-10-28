@@ -14,6 +14,7 @@ import { buildPostLookPrompt, parsePostLookDecision } from '../posts/baiyunPostR
 
 export type JunluoStatePaperResult<T> = {
   diagnostics: AssistantLifeGenerationDiagnostics;
+  parseIssues?: string[];
   reason?: string;
   status: 'failure' | 'success';
   value?: T;
@@ -64,8 +65,8 @@ export async function prepareAssistantWants(input: AssistantWantsInput) {
   const taskPrompt = buildPostLookPrompt(JUNLUO_WANTS_PROMPT, input.postLookKind);
   const apiMessages = (): ApiChatMessage[] => [
     { role: 'system', content: envelope.stableSystemPrompt },
-    { role: 'system', content: facts() },
     { role: 'system', content: taskPrompt },
+    { role: 'system', content: facts() },
   ];
   const diagnostics: AssistantLifeGenerationDiagnostics = { outputChars: 0, recoveredFromReasoning: false,
     responseFormatRequested: input.connection.chatJsonOutputEnabled === true };
@@ -101,7 +102,8 @@ export async function prepareAssistantWants(input: AssistantWantsInput) {
       promptTokens: completion.usage.promptTokens, finishReason: completion.finishReason };
     return value.valid
       ? { status: 'success', value, diagnostics: completedDiagnostics, lookAtPost }
-      : { status: 'failure', reason: output ? 'invalid-json' : 'empty-content', diagnostics: completedDiagnostics, lookAtPost };
+      : { status: 'failure', reason: output ? 'invalid-json' : 'empty-content', parseIssues: value.issues,
+        diagnostics: completedDiagnostics, lookAtPost };
   } catch (error) {
     return { status: 'failure', diagnostics,
       reason: error instanceof AssistantLifeRequestError ? error.failureReason : 'http-transient' };

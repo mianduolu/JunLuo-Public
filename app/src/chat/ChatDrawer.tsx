@@ -105,6 +105,12 @@ export const ChatDrawer = memo(forwardRef<ChatDrawerHandle, ChatDrawerProps>(fun
         </View>
         <View style={styles.drawerFooter}>
           <Pressable
+            onPress={() => closeAndNavigate('letter')}
+            style={({ pressed }) => [styles.drawerFooterButton, pressed ? styles.drawerFooterButtonPressed : null]}
+          >
+            {({ pressed }) => <Text style={[styles.drawerFooterText, pressed ? styles.drawerFooterTextPressed : null]}>✉  往来</Text>}
+          </Pressable>
+          <Pressable
             onPress={() => closeAndNavigate('period')}
             style={({ pressed }) => [styles.drawerFooterButton, pressed ? styles.drawerFooterButtonPressed : null]}
           >

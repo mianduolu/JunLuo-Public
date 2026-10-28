@@ -157,7 +157,7 @@ export async function prepareUnifiedContactChatHandoff(readOnly = false): Promis
     }, stale.epoch);
     state = await readUnifiedContactState(); op = state.current;
   }
-  const remaining = op && op.status !== 'finished' && await contactSourcesCurrent(op)
+  const remaining = op && !op.sleepGreeting && op.status !== 'finished' && await contactSourcesCurrent(op)
     ? op.messages.filter((_text, index) => !op.savedMessageIds.includes(contactMessageId(op, index))) : [];
   const failureMaterial = buildContactFailureMaterial(state);
   const material = [failureMaterial, buildUnsentContactMessages(remaining)].filter(Boolean).join('\n\n');

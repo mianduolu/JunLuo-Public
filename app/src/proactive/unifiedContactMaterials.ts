@@ -126,6 +126,7 @@ export function buildUnifiedContactFacts(input: {
   entries: ContactMaterialEntry[]; bodyFacts?: string; handoff?: string; ordinary?: boolean;
   separateChat?: boolean;
   contactWaiting?: ContactWaiting;
+  expiredShareInstruction?: string;
 }): string {
   const messages = selectNearStatusConversation(input.messages);
   const waiting = input.ordinary === true ? formatContactWaiting(input.contactWaiting, input.now) : '';
@@ -137,6 +138,7 @@ export function buildUnifiedContactFacts(input: {
     `【这次 I 能看见的近况】\n\n现在是 ${formatChatAfterglowMessageTime(input.now)}。`,
     idleDuration ? `I 已经有 ${idleDuration} 没有在聊天里听见 you 说话了。` : '',
     waiting,
+    input.ordinary === true ? input.expiredShareInstruction : '',
     !input.separateChat && messages.length ? JSON.stringify(messages.map(message => ({ role: message.role,
       time: formatChatAfterglowMessageTime(message.createdAt), content: message.content }))) : '',
     affect,

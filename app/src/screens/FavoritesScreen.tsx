@@ -112,8 +112,10 @@ export function FavoritesScreen({ navigate }: { navigate: Navigate }) {
                 ? '以前收下'
                 : `收下于 ${formatSavedAt(round.entry.firstHeartedAt)}`}
             </Text>
-            <Text style={styles.speaker}>我说</Text>
-            <RoundMessages messages={round.youMessages} />
+            {round.youMessages.length ? <>
+              <Text style={styles.speaker}>我说</Text>
+              <RoundMessages messages={round.youMessages} />
+            </> : null}
             <Text style={styles.speaker}>你说</Text>
             <RoundMessages messages={round.iMessages} />
             <Pressable onPress={() => removeRound(round)} style={styles.removeButton}>

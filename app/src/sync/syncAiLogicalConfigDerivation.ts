@@ -263,6 +263,8 @@ export function projectAiLogicalConnections(raw: string | null) {
       ...(normalizeModelParameters(candidate.modelParameters)
         ? { modelParameters: normalizeModelParameters(candidate.modelParameters) }
         : {}),
+      ...(candidate.promptCacheMode === 'ephemeral-first-system'
+        ? { promptCacheMode: 'ephemeral-first-system' as const } : {}),
       contextWindowTokens: integer(
         candidate.contextWindowTokens,
         65_536,

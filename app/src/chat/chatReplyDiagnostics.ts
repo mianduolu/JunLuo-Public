@@ -83,7 +83,7 @@ export function createChatReplyDiagnosticCollector(context: {
       'responseAvailableAt', 'bodyReadStartedAt', 'timeoutMs', 'finishedAt', 'responseChars', 'httpStatus'] as const) {
       if (typeof event[key] === 'number') attempt[key] = event[key];
     }
-    for (const key of ['transportKind', 'errorName', 'errorCode', 'causeCode', 'providerRequestId'] as const) {
+    for (const key of ['transportKind', 'errorName', 'errorCode', 'causeCode', 'providerRequestId', 'providerHost'] as const) {
       if (event[key] !== undefined) Object.assign(attempt, { [key]: event[key] });
     }
     if (event.externalAborted !== undefined) attempt.externalAborted = event.externalAborted;

@@ -46,6 +46,10 @@ async function loadRecord(db: Database, id: string): Promise<ShiyingRecordV1 | n
   const images = await db.getAllAsync<Row>(
     'SELECT * FROM shiying_record_images WHERE record_id = ? ORDER BY ordinal;', id,
   );
+  return shiyingRecordFromDatabaseRows(row, images);
+}
+
+export function shiyingRecordFromDatabaseRows(row: Row, images: readonly Row[]): ShiyingRecordV1 {
   return parseShiyingRecordV1({
     payloadVersion: row.payload_version, id: row.id, recordDate: row.record_date,
     author: row.author, body: row.body, status: row.status,

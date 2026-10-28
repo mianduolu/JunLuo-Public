@@ -1,17 +1,24 @@
 import { proactiveLedgerStorageBridge as AsyncStorage } from '../../sync/syncProactiveLedgerStorageBridge';
+import { formatChatAfterglowMessageTime } from '../../chat/chatAfterglowProbe';
+import { projectBaiyunShareResponsePresentation } from './actionShareResponsePresentation';
 import {
   BAIYUN_PENDING_SHARE_EXCHANGES_KEY,
   buildBaiyunFixedPendingSharesPrompt,
+  buildBaiyunExpiredShareAwarenessPrompt,
+  getBaiyunExpiredShareAwarenessItems,
   buildBaiyunPendingSharesPrompt,
   canRegisterBaiyunSelfDrivenShare,
   getBaiyunActiveShareExchanges,
+  getBaiyunRecentEndedShareExchanges,
   getBaiyunFixedPendingSharePromptItems,
   getBaiyunPendingSharePromptItems,
   getBaiyunPendingShareSettlementItems,
   normalizeBaiyunShareExcerpt,
+  projectBaiyunShareResponseExpiry,
   registerBaiyunShareExchangeInRecords,
   resolveBaiyunShareResponsesInRecords,
   type BaiyunPendingShareExchange,
+  type BaiyunExpiredShareAwarenessItem,
   type BaiyunPendingShareInvitationKind,
   type BaiyunPendingShareOrigin,
   type BaiyunPendingShareResponseDriveKey,
@@ -138,36 +145,61 @@ function enqueueShareMutation<T>(mutate: () => Promise<T>) {
   return result;
 }
 
+async function expiredShareAwarenessForRecords(
+  records: readonly BaiyunPendingShareExchange[],
+  now: number,
+) {
+  const empty = { expiredShareItems: [] as BaiyunExpiredShareAwarenessItem[], expiredShareInstruction: '' };
+  if (!getBaiyunExpiredShareAwarenessItems(records, now).length) return empty;
+  try {
+    const { loadLetters } = await import('../../letters/letterStore');
+    const letters = (await loadLetters()).filter((letter) => !letter.replyContent?.trim()
+      && (letter.kind !== 'future-self' || typeof letter.openedAt === 'number'
+        && Number.isFinite(letter.openedAt) && letter.openedAt <= now));
+    const visible = records.filter((record) => projectBaiyunShareResponsePresentation(
+      [record], letters, undefined, now,
+    ).recentEnded.some((ended) => ended.id === record.id));
+    const expiredShareItems = getBaiyunExpiredShareAwarenessItems(visible, now);
+    return { expiredShareItems,
+      expiredShareInstruction: buildBaiyunExpiredShareAwarenessPrompt(expiredShareItems, formatChatAfterglowMessageTime) };
+  } catch {
+    // Optional awareness must not discard the existing pending-share material.
+    return empty;
+  }
+}
+
+export async function loadBaiyunExpiredShareAwareness(now = Date.now()) {
+  return expiredShareAwarenessForRecords(await loadBaiyunPendingShareExchanges(), now);
+}
+
 export async function loadBaiyunPendingSharePromptContext(
   sessionId: string,
   replyToMessageId?: string,
+  now = Date.now(),
 ) {
   const records = await loadBaiyunPendingShareExchanges();
-  const items = getBaiyunPendingSharePromptItems(records, sessionId, replyToMessageId);
+  const items = getBaiyunPendingSharePromptItems(records, sessionId, replyToMessageId, now);
+  const expiredAwareness = await expiredShareAwarenessForRecords(records, now);
   const fixedItems = getBaiyunFixedPendingSharePromptItems(
     records,
     sessionId,
     replyToMessageId,
+    now,
   );
   return {
     items,
     fixedItems,
-    settlementItems: getBaiyunPendingShareSettlementItems(records, replyToMessageId),
+    settlementItems: getBaiyunPendingShareSettlementItems(records, replyToMessageId, now),
     instruction: buildBaiyunPendingSharesPrompt(items),
     fixedInstruction: buildBaiyunFixedPendingSharesPrompt(fixedItems),
+    ...expiredAwareness,
   };
 }
 
-export async function loadBaiyunShareResponsePresentation(sessionId?: string) {
+export async function loadBaiyunShareResponsePresentation(sessionId?: string, now = Date.now()) {
   const records = await loadBaiyunPendingShareExchanges();
-  const active = getBaiyunActiveShareExchanges(records, sessionId);
-  const recentEnded = records
-    .filter((record) => (
-      record.state !== 'waiting'
-      && (!sessionId || record.sessionId === sessionId)
-    ))
-    .sort((left, right) => (right.resolvedAt ?? 0) - (left.resolvedAt ?? 0))
-    .slice(0, 4);
+  const active = getBaiyunActiveShareExchanges(records, sessionId, now);
+  const recentEnded = getBaiyunRecentEndedShareExchanges(records, sessionId, now);
   return { active, recentEnded };
 }
 
@@ -193,7 +225,7 @@ export async function registerBaiyunPendingShareExchange(input: {
     if (!sourceMessageIds.length) {
       return { created: false as const, record: undefined };
     }
-    const records = await loadBaiyunPendingShareExchanges();
+    const records = projectBaiyunShareResponseExpiry(await loadBaiyunPendingShareExchanges(), now);
     const existing = records.find((record) => record.sessionId === input.sessionId
       && (record.origin === input.origin || (input.origin === 'letter' && record.origin === 'chat_action'))
       && record.sourceMessageIds.length === sourceMessageIds.length
@@ -234,8 +266,10 @@ export async function resolveBaiyunPendingShareResponses(input: {
   responseMessageId: string;
   sessionId: string;
   now?: number;
+  canCommit?: () => boolean | Promise<boolean>;
 }) {
   return enqueueShareMutation(async () => {
+    if (input.canCommit && !await input.canCommit()) return [];
     const next = resolveBaiyunShareResponsesInRecords({
       records: await loadBaiyunPendingShareExchanges(),
       responses: input.responses,
@@ -244,6 +278,7 @@ export async function resolveBaiyunPendingShareResponses(input: {
       now: input.now,
     });
     if (!next.resolved.length) return next.resolved;
+    if (input.canCommit && !await input.canCommit()) return [];
     await saveBaiyunPendingShareExchanges(next.records);
     return next.resolved;
   });

@@ -35,6 +35,9 @@ export function contactCurrentStateDraftVersion(ref: ContactSource): string | nu
 }
 export type ContactPause = { sourceMessageId: string; sourceAt: number; until: number | null };
 export type ContactOpportunity = {
+  sleepGreeting?: import('../life/sleepPlanPolicy').SleepGreetingBoundary & {
+    messageId: string; ordinaryMaterial?: string; messageCreatedAt?: number; deliveredAt?: number;
+  };
   /** Missing on already parsed legacy opportunities: keep their original material contract. */
   materialVersion?: 2;
   /** Exact ordinary-contact request material; absent on previously requested legacy opportunities. */
@@ -214,6 +217,7 @@ export function contactRetryIsDue(op: ContactOpportunity, now: number): boolean 
 }
 
 export function contactMessageId(op: ContactOpportunity, index: number): string {
+  if (index === 0 && op.sleepGreeting) return op.sleepGreeting.messageId;
   return `${op.id}:message:${index}`;
 }
 

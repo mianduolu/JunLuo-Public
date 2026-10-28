@@ -60,13 +60,18 @@ async function context(options: PostRecallReadOptions, postIds?: readonly string
   return { database, knowledge, tags };
 }
 
-export async function loadPostRecallSnapshot(postId: string, options: PostRecallReadOptions = {}): Promise<PostRecallSnapshot | null> {
-  const { database, knowledge, tags } = await context(options, [postId]);
+async function readPostRecallSnapshot(postId: string, prepared: Awaited<ReturnType<typeof context>>,
+  signal?: AbortSignal): Promise<PostRecallSnapshot | null> {
+  check(signal);
+  const { database, knowledge, tags } = prepared;
   const [post, comments] = await Promise.all([loadLocalBaiyunPost(postId, database), loadLocalBaiyunPostComments(postId, database)]);
-  check(options.signal);
+  check(signal);
   if (!post) return null;
   const material = selectKnownPostMaterial(post, comments, knowledge.reading, tags, knowledge.vision);
   return material ? createPostRecallSnapshot(material) : null;
+}
+export async function loadPostRecallSnapshot(postId: string, options: PostRecallReadOptions = {}): Promise<PostRecallSnapshot | null> {
+  return readPostRecallSnapshot(postId, await context(options, [postId]), options.signal);
 }
 
 export async function listPostRecallSnapshots(options: PostRecallReadOptions = {}): Promise<PostRecallSnapshot[]> {
@@ -107,8 +112,12 @@ export async function listPostSourceIndexSourcesForPost(postId: string, options:
 }
 export async function loadPostSourceIndexSources(ids: readonly string[], options: PostRecallReadOptions = {}): Promise<Map<string, PostSourceIndexSource>> {
   const owners = await resolvePostSourceIds(ids, options), wanted = new Set(ids), result = new Map<string, PostSourceIndexSource>();
-  for (const postId of new Set(owners.values())) {
-    for (const source of await listPostSourceIndexSourcesForPost(postId, options)) if (wanted.has(source.id)) result.set(source.id, source);
+  const postIds = [...new Set(owners.values())];
+  if (!postIds.length) return result;
+  const prepared = await context(options, postIds);
+  for (const postId of postIds) {
+    const snapshot = await readPostRecallSnapshot(postId, prepared, options.signal);
+    for (const source of snapshot?.sources ?? []) if (wanted.has(source.messageId)) result.set(source.messageId, indexSource(source));
   }
   return result;
 }

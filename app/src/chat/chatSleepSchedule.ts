@@ -34,11 +34,12 @@ export async function acceptChatSleepMessage(input: {
   if (Platform.OS !== 'android' || !canCommitBackupRestoreDataEpoch(input.dataEpoch)) return;
   liveSleepTurns.add(turnKey(input.sessionId, input.turnId));
   try {
+    const { recoverDeliveredSleepGreeting, reconcileSleepPlanLocally } = await import('../life/sleepPlanRuntime');
     await runBackupRestoreDataEpochCommit(input.dataEpoch, async () => {
+      await recoverDeliveredSleepGreeting(input.dataEpoch);
       await settleSleepNight(input.now);
       await beginChatSleepTurn(input);
     });
-    const { reconcileSleepPlanLocally } = await import('../life/sleepPlanRuntime');
     await reconcileSleepPlanLocally(Date.now(), input.dataEpoch);
   } catch (error) {
     liveSleepTurns.delete(turnKey(input.sessionId, input.turnId));
@@ -92,7 +93,7 @@ export function createChatSleepReplyLifecycle(input: {
       if (Platform.OS !== 'android' || !canCommitBackupRestoreDataEpoch(input.dataEpoch)) return;
       await runBackupRestoreDataEpochCommit(input.dataEpoch, async () => {
         const replyCurrent = !expired && await isChatSleepReplyCurrent(input);
-        await finishChatSleepTurn({ ...input, sourceMessageIds: [...input.sourceMessageIds, ...(replySaved ? replyIds : [])] });
+        await finishChatSleepTurn({ ...input, replySaved, sourceMessageIds: [...input.sourceMessageIds, ...(replySaved ? replyIds : [])] });
         await settleSleepNight(Date.now());
         if (!replySaved && !replyCurrent) {
           const plan = (await readRelevantSleepNight(input.startedAt))?.nightSleepPlan;

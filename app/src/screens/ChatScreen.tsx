@@ -70,6 +70,7 @@ import {
   ChatToolCallCards,
 } from '../chat/ChatMessageCards';
 import { ChatMessageBubble } from '../chat/ChatMessageBubble';
+import { useChatNotebookMarkers } from '../chat/useChatNotebookMarkers';
 import { ChatScreenView } from '../chat/ChatScreenView';
 import {
   buildChatSendIntentSnapshot,
@@ -2134,7 +2135,10 @@ export function ChatScreen({
     }
   };
 
+  const notebookMarkedMessageIds = useChatNotebookMarkers({ active, externalMessageVersion,
+    messages: historySearch.browsing ? historySearch.window?.messages ?? [] : messages });
   const messageRenderRevision = useMemo(() => JSON.stringify({
+    notebookMarkedMessageIds: [...notebookMarkedMessageIds],
     likedStyleReferenceIds,
     memorySelectionOpen,
     musicIsPlaying: musicPlayer.isPlaying,
@@ -2147,6 +2151,7 @@ export function ChatScreen({
     titleTextStyle,
     transcriptTextStyle: exposedLabelTextStyle,
   }), [
+    notebookMarkedMessageIds,
     exposedLabelTextStyle,
     likedStyleReferenceIds,
     memorySelectionOpen,
@@ -2288,6 +2293,7 @@ export function ChatScreen({
         messageMusicCards={messageMusicCards}
         messageSelected={messageSelected}
         messageSelectionMode={messageSelectionMode} memoryOrganizing={organizing}
+        notebookRecorded={notebookMarkedMessageIds.has(message.id)}
         musicIsPlaying={musicPlayer.isPlaying}
         musicShowCandidates={musicMultipleCardsEnabled}
         onLike={() => { void toggleAssistantReplyRoundHeart(message); }}

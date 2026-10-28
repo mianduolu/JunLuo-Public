@@ -10,8 +10,8 @@ you 身体不舒服、心里难受、被一件事卡住、有事拖着没做，�
 
 careUpdates 每项填写：
 item：已有事情填事项序号，新事情填 null。
-from：本轮 you 新消息的序号。
-quote：从这条消息里原样摘出说明这件事或新进展的片段。
+from：填本轮 you 消息的序号；结束已有事项时，也可以填 null。
+quote：摘出这条消息里的原话；from 填 null 时，照抄该事项里列出的 you 原话。
 state：继续／结束。
 继续：这件事还有后续需要留意，比如 you 仍不舒服、希望 I 继续留意，或已经说好之后再跟进。
 结束：you 说事情已经做完、已经不难受，或不用 I 再跟进，就结束这次跟进。
@@ -34,6 +34,8 @@ export type ChatCareUpdate = {
   quote: string;
   state: '继续' | '结束';
   sourceMessageId: string;
+  /** Local card provenance only; stripped before the existing pending-operation journal. */
+  sourceSessionId?: string;
   occurredAt: number;
 };
 
@@ -115,9 +117,17 @@ export function parseChatCareUpdates(input: {
     if (raw.state !== '继续' && raw.state !== '结束') { rejectionCodes.push('care_state_invalid'); continue; }
     if (raw.item === null && raw.state === '结束') { rejectionCodes.push('care_new_item_ended'); continue; }
     const numbered = Number.isInteger(raw.from) && raw.from > 0 ? messages[raw.from - 1] : undefined;
-    const source = numbered && current.get(numbered.id);
-    if (!source || source.role !== 'you' || source.text !== numbered?.text || source.sentAt !== numbered.sentAt) {
-      rejectionCodes.push('care_source_not_current_you'); continue;
+    const cardEvidence = raw.from === null && existing && raw.state === '结束'
+      ? (existing.deviceRecord ? [existing.evidence?.latest ?? existing.evidence?.origin]
+        : [existing.evidence?.latest, existing.evidence?.origin])
+        .find((evidence) => evidence && evidence.quote === raw.quote)
+      : undefined;
+    const source = cardEvidence
+      ? { id: cardEvidence.messageId, role: 'you' as const, text: cardEvidence.quote, sentAt: cardEvidence.sentAt }
+      : numbered && current.get(numbered.id);
+    if (!source || source.role !== 'you' || (!cardEvidence
+      && (source.text !== numbered?.text || source.sentAt !== numbered.sentAt))) {
+      rejectionCodes.push(raw.from === null ? 'care_source_not_in_item' : 'care_source_not_current_you'); continue;
     }
     if (typeof raw.quote !== 'string' || !raw.quote.trim() || !source.text.includes(raw.quote)) {
       rejectionCodes.push('care_quote_not_verbatim'); continue;
@@ -127,7 +137,8 @@ export function parseChatCareUpdates(input: {
     if (updates.length === 3) { rejectionCodes.push('care_update_limit'); continue; }
     seen.add(key);
     updates.push({ ...(existing ? { eventId: existing.id, expectedRevision: existing.revision } : {}),
-      quote: raw.quote, state: raw.state, sourceMessageId: source.id, occurredAt: source.sentAt });
+      quote: raw.quote, state: raw.state, sourceMessageId: source.id, occurredAt: source.sentAt,
+      ...(cardEvidence ? { sourceSessionId: cardEvidence.sessionId } : {}) });
   }
   return { status: rejectionCodes.length ? 'partial' as const : 'valid' as const, updates, diagnostic: { rejectionCodes } };
 }

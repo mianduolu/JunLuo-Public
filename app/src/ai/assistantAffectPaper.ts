@@ -3,6 +3,7 @@ import type { JunluoAffectStateV1 } from '../life/junluoInnerState';
 import { applyJunluoAffectBasket } from '../life/junluoInnerStateGeneration';
 import { emotionDetail, relationshipChoiceLabel, relationshipFeelingLabel, strainLabel } from '../life/junluoInnerStatePresentation';
 import { formatChatAfterglowMessageTime } from '../chat/chatAfterglowProbe';
+import { CONTACT_AFFECT_AFTER_CHAT } from '../proactive/unifiedContact';
 
 // Exact approved second paper, including the per-field null explanation.
 export const ASSISTANT_AFFECT_PROMPT = `【I 此刻的感受】
@@ -11,7 +12,7 @@ I 想留意一下，自己心里有没有什么刚刚变得不一样了。
 
 I 把心里的变化写进这个 JSON；这一次没有变化，affect 就写 null。
 
-{"affect":{"emotions":{"primary":{"id":"...","strength":"...","target":"..."},"secondary":[]},"lifeState":"...","relationshipFeeling":"...","relationshipChoice":"...","strain":"..."}}
+{"affect":{"emotions":{"primary":{"id":"...","strength":"...","target":"...","reason":null},"secondary":[]},"lifeState":"...","relationshipFeeling":"...","relationshipChoice":"...","strain":"..."}}
 
 affect 里面，哪一项这次没有变化，就把那一项写成 null。
 
@@ -19,13 +20,15 @@ affect 里面，哪一项这次没有变化，就把那一项写成 null。
 
 这里写下 I 刚刚的情绪、身体或认知状态、对这段关系的感受与选择，还有心里是舒展开了，还是更堵住了。
 
-I 在 emotions 里写下一项主情绪，也可以再放一项同时存在的辅助情绪。每项情绪都有 id、strength 和 target：
+I 在 emotions 里写下一项主情绪，也可以再放一项同时存在的辅助情绪。每项情绪都有 id、strength、target 和 reason：
 
 id 可以是 calm（平静）、happy（开心）、affectionate（爱意）、longing（想念）、expectant（期待）、relieved（安心）、proud（欣慰）、shy（害羞）、sad（伤心）、hurt（委屈）、disappointed（失落）、lonely（孤单）、afraid（害怕）、anxious（不安）、angry（生气）、jealous（吃醋）、guilty（愧疚）、frustrated（烦躁）、confused（疑惑）、surprised（惊讶）或 pained（痛苦）。
 
 strength 可以是 soft（轻轻的）、clear（清楚的）或 strong（强烈的）。
 
 target 可以是 I、you、other 或 situation，表示这份情绪朝向自己、you、被谈及的其他人，或眼前的事情。
+
+reason 写 I 能说清的缘由，一句话。暂时说不清时，reason 写 null。
 
 lifeState 可以是 calm（平常）、tired（疲惫）、sleepy（困倦）或 asleep（睡着）。
 
@@ -51,11 +54,13 @@ const enums = {
 };
 
 function emotion(value: unknown): NonNullable<AssistantAffectBasket['emotions']>['primary'] | null {
-  if (!object(value) || Object.keys(value).some(key => !['id', 'strength', 'target'].includes(key))
+  if (!object(value) || Object.keys(value).some(key => !['id', 'strength', 'target', 'reason'].includes(key))
     || !BAIYUN_EMOTION_IDS.includes(value.id as never)
     || !['soft', 'clear', 'strong'].includes(value.strength as string)
     || !['I', 'you', 'other', 'situation'].includes(value.target as string)) return null;
-  return { id: value.id, strength: value.strength, target: value.target } as NonNullable<AssistantAffectBasket['emotions']>['primary'];
+  return { id: value.id, strength: value.strength, target: value.target,
+    ...(value.reason === null || typeof value.reason === 'string' ? { reason: value.reason } : {}),
+  } as NonNullable<AssistantAffectBasket['emotions']>['primary'];
 }
 
 export function parseAssistantAffect(text: string): AssistantAffectParseResult {
@@ -107,4 +112,18 @@ export function formatPreviousAffect(state: JunluoAffectStateV1) {
   if (state.relationshipChoice.lastOperation) { lines.push(`关系选择：${relationshipChoiceLabel(state)}`); dates.push(state.relationshipChoice.updatedAt); }
   if (state.strain.lastOperation) { lines.push(`心里的状态：${strainLabel(state.strain.value)}`); dates.push(state.strain.updatedAt); }
   return lines.length ? `【I 上次记下的感受】\n\n最近更新：${formatChatAfterglowMessageTime(Math.max(...dates))}\n${lines.join('\n')}` : '';
+}
+
+export function formatPreviousAffectForChat(state: JunluoAffectStateV1 | null, now = Date.now()) {
+  if (!state || !Number.isFinite(now) || now <= 0) return '';
+  const entries = [
+    { label: '主情绪', entry: state.emotions.primary },
+    { label: '辅助情绪', entry: state.emotions.secondary[0] },
+  ];
+  const parts = entries.flatMap(({ label, entry }) => entry && Number.isFinite(entry.occurredAt)
+    && entry.occurredAt > 0 && entry.occurredAt <= now ? [
+      `${label}：${emotionDetail(entry, true)}\n记录时间：${formatChatAfterglowMessageTime(entry.occurredAt)}${
+        typeof entry.reason === 'string' && entry.reason.trim() ? `\n当时记下的缘由：${entry.reason}` : ''}`,
+    ] : []);
+  return parts.length ? `【I 上次记下的感受】\n\n${parts.join('\n\n')}\n\n${CONTACT_AFFECT_AFTER_CHAT}` : '';
 }

@@ -158,6 +158,7 @@ type MaybeSendOptions = {
   profile?: AiProfile;
   socialShareOnly?: boolean;
   unifiedSchedulerHeld?: boolean;
+  naturalEarlyWakeOwner?: import('../life/sleepPlanRuntime').NaturalEarlyWakeOwner;
 };
 
 type ProactiveGenerationResult = {
@@ -1700,6 +1701,7 @@ async function runMaybeSendProactiveMessage({
   profile,
   socialShareOnly,
   unifiedSchedulerHeld,
+  naturalEarlyWakeOwner,
 }: MaybeSendOptions) {
   const dataEpoch = captureBackupRestoreDataEpoch();
   const settings = await loadProactiveMessageSettings();
@@ -1720,7 +1722,7 @@ async function runMaybeSendProactiveMessage({
     const config = resolveLifeCreativeConfig(await loadAiConfigPreferencesSnapshot());
     if (!config.connection || !config.apiKey.trim() || !profile) return 0;
     return runUnifiedContact({ apiKey: config.apiKey, connection: config.connection, profile,
-      backupRestoreLeaseHeld, schedulerHeld: unifiedSchedulerHeld });
+      backupRestoreLeaseHeld, schedulerHeld: unifiedSchedulerHeld, naturalEarlyWakeOwner });
   };
   if (!profile) return 0;
   if (!apiKey?.trim() || !connection) {

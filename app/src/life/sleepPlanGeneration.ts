@@ -26,6 +26,8 @@ you 还醒着时，I 和 you 说说今晚的打算，也可以撒撒娇，拉 yo
 
 如果决定改时间，I 就用作息工具记下。
 
+I 把晚安和此刻还想对 you 说的话，一起说给 you 听。
+
 I 把想说的话写进这个 JSON：
 {"message":"..."}`;
 
@@ -34,6 +36,8 @@ export const WAKE_PLAN_PROMPT = `【慢慢醒来】
 到起床时间啦，I 现在要起床，还是再赖会床，或是再睡一会呢？
 
 如果还不想起来，I 就用作息工具记下自己的打算和起床时间。
+
+I 把早安和此刻还想对 you 说的话，一起说给 you 听。
 
 I 把自己的打算说给 you 听，写进这个 JSON：
 {"message":"..."}`;
@@ -44,10 +48,21 @@ I 已经决定现在就睡啦，睡前想和 you 说几句话。
 
 you 还醒着时，I 和 you 说说今晚的打算，也可以撒撒娇，拉 you 一起睡；you 已经睡下时，I 就给 you 留句话，等 you 醒来再看。
 
+I 把晚安和此刻还想对 you 说的话，一起说给 you 听。
+
 I 把想说的话写进这个 JSON：
 {"message":"..."}`;
 
 export type SleepSavedTool = { callId: string; input: Record<string, unknown>; result: SleepScheduleResult };
+
+export const RETURN_SLEEP_PROMPT = `【睡回去前】
+
+I 这会儿准备睡回去了，想和 you 说声晚安。
+
+I 把此刻还想对 you 说的话，也一起说给 you 听。
+
+I 把想说的话写进这个 JSON：
+{"message":"..."}`;
 
 export async function buildSleepFactsMaterial(context: SleepPlanContext, includeAwakeFact = true) {
   const rhythm = await getRhythmSnapshot(context.requestAt).catch(() => null);
@@ -83,20 +98,24 @@ export async function buildSleepDecisionMaterial(context: SleepPlanContext) {
 
 export async function generateSleepPlan(input: {
   apiKey: string; connection: AiConnection; profile: AiProfile;
-  context: SleepPlanContext; messages: SubjectiveMessage[]; phase: 'prepare' | 'wake';
+  context: SleepPlanContext; messages: SubjectiveMessage[]; phase: 'prepare' | 'wake' | 'return';
   remainingRequests: number; signal: AbortSignal; onRequestStart: () => Promise<void>;
   canContinue: () => Promise<boolean>;
   commit: (values: Record<string, unknown>, callId: string) => Promise<SleepScheduleResult>;
   savedTool?: SleepSavedTool;
+  ordinaryMaterial?: string;
+  beforeTransport?: () => Promise<void>;
+  onTransportAttempt?: Parameters<typeof fetchAssistantLifeCompletion>[0]['onTransportAttempt'];
 }) {
   const material = await buildSleepDecisionMaterial(input.context);
   const envelope = await buildAssistantStatePairEnvelope({ contextSource: 'assistant-life.state', materialPrompt: '', profile: input.profile });
   const messages: OpenAiCompatibleRequestMessage[] = [
     { role: 'system', content: envelope.stableSystemPrompt },
     { role: 'system', content: material },
+    ...(input.ordinaryMaterial ? [{ role: 'system' as const, content: input.ordinaryMaterial }] : []),
     ...input.messages.filter((message) => message.content.trim() && message.deliveryStatus !== 'failed').slice(-24)
       .map((message) => ({ role: message.role === 'I' ? 'assistant' as const : 'user' as const, content: message.content })),
-    { role: 'system', content: input.phase === 'prepare' ? SLEEP_PLAN_PROMPT : WAKE_PLAN_PROMPT },
+    { role: 'system', content: input.phase === 'prepare' ? SLEEP_PLAN_PROMPT : input.phase === 'wake' ? WAKE_PLAN_PROMPT : RETURN_SLEEP_PROMPT },
   ];
   let savedTool = input.savedTool;
   const addSavedTool = (tool: SleepSavedTool) => {
@@ -115,9 +134,15 @@ export async function generateSleepPlan(input: {
     const result = await fetchAssistantLifeCompletion({
       apiKey: input.apiKey, connection: input.connection, envelope, contextSource: 'sleep-plan',
       userPrompt: '', apiMessagesOverride: messages, signal: input.signal, timeoutMs: 25_000,
-      onRequestStart: async () => { await input.onRequestStart(); startedAt = Date.now(); },
+      onRequestStart: async prepare => {
+        await input.onRequestStart();
+        await prepare?.();
+        await input.beforeTransport?.();
+        startedAt = Date.now();
+      },
+      onTransportAttempt: input.onTransportAttempt,
       request: { ...buildAssistantLifeShortJsonRequest(input.connection, 0.7), max_tokens: 600,
-        ...(!savedTool ? { tools: [toolDefinitionToOpenAiTool(sleepScheduleToolFor(input.phase === 'wake' ? 'wake' : 'whole'))], tool_choice: 'auto' } : {}),
+        ...(!savedTool && input.phase !== 'return' ? { tools: [toolDefinitionToOpenAiTool(sleepScheduleToolFor(input.phase === 'wake' ? 'wake' : 'whole'))], tool_choice: 'auto' } : {}),
       },
     });
     if (startedAt === undefined || Date.now() - startedAt >= 25_000) throw new Error('sleep-request-timeout');
@@ -125,7 +150,7 @@ export async function generateSleepPlan(input: {
     const rawMessage = result.payload.choices?.[0]?.message as OpenAiCompatibleToolCallMessage | undefined;
     const parsedTools = parseOpenAiToolCalls(rawMessage ?? {}, [sleepScheduleWriteTool]);
     if (parsedTools.rawCallCount) {
-      if (savedTool || parsedTools.errors.length || parsedTools.invocations.length !== 1) throw new Error('invalid-sleep-tool-call');
+      if (input.phase === 'return' || savedTool || parsedTools.errors.length || parsedTools.invocations.length !== 1) throw new Error('invalid-sleep-tool-call');
       const invocation = parsedTools.invocations[0];
       const toolResult = await executeToolCall({
         callId: invocation.callId, toolId: invocation.toolId, input: invocation.input,

@@ -353,6 +353,18 @@ function mergePendingSleep(a: JsonRecord | undefined, b: JsonRecord | undefined,
     ? recordOf(selected.pendingSleep, 'pending sleep') : canonicalJson(a) > canonicalJson(b) ? a : b;
   const first = numberAt(a.roundStartedAt) === numberAt(b.roundStartedAt)
     ? canonicalJson(a) <= canonicalJson(b) ? a : b : numberAt(a.roundStartedAt) < numberAt(b.roundStartedAt) ? a : b;
+  if (a.greeting !== undefined || b.greeting !== undefined) {
+    if (a.kind !== b.kind || a.hardDeadlineAt !== b.hardDeadlineAt
+      || a.sessionId !== b.sessionId || a.turnId !== b.turnId || a.roundStartedAt !== b.roundStartedAt
+      || a.roundDeadlineAt !== b.roundDeadlineAt) return first;
+    const delivered = [a, b].filter(value => value.greeting !== undefined)
+      .sort((x, y) => numberAt(recordOf(y.greeting, 'pending greeting').deliveredAt)
+        - numberAt(recordOf(x.greeting, 'pending greeting').deliveredAt)
+        || numberAt(y.turnEndedAt) - numberAt(x.turnEndedAt))[0];
+    const greeting = recordOf(delivered.greeting, 'pending greeting');
+    return { ...first, greeting,
+      ...(delivered.turnEndedAt !== undefined ? { turnEndedAt: delivered.turnEndedAt, dueAt: delivered.dueAt } : {}) };
+  }
   const terminal = [a, b].filter(value => value.turnEndedAt !== undefined)
     .sort((x, y) => numberAt(x.turnEndedAt) - numberAt(y.turnEndedAt)
       || numberAt(x.dueAt) - numberAt(y.dueAt))[0];
@@ -370,8 +382,16 @@ function mergeSleepOpportunity(a: JsonValue | undefined, b: JsonValue | undefine
     || numberAt(left.deliveredAt) - numberAt(right.deliveredAt);
   const first = difference === 0 ? canonicalJson(left) > canonicalJson(right) ? left : right : difference > 0 ? left : right;
   const other = first === left ? right : left;
-  return { ...other, ...first, requestCount: Math.max(numberAt(left.requestCount), numberAt(right.requestCount)),
+  const greeting = [first, other].map(value => value.greeting).find(value => value
+    && recordOf(value, 'sleep greeting').messageId === first.messageId
+    && recordOf(value, 'sleep greeting').sessionId === first.sessionId);
+  const sharedContactId = first.sharedContactId ?? (first.sessionId === other.sessionId
+    && first.messageId === other.messageId ? other.sharedContactId : undefined);
+  const merged: JsonRecord = { ...other, ...first, requestCount: Math.max(numberAt(left.requestCount), numberAt(right.requestCount)),
     ...(left.retryUsed || right.retryUsed ? { retryUsed: true } : {}) };
+  delete merged.greeting; delete merged.sharedContactId;
+  return { ...merged, ...(greeting !== undefined ? { greeting } : {}),
+    ...(sharedContactId !== undefined ? { sharedContactId } : {}) };
 }
 
 function mergeSleepExperience(current: JsonRecord | undefined, incoming: JsonRecord | undefined, selected: JsonRecord | undefined) {
@@ -379,6 +399,12 @@ function mergeSleepExperience(current: JsonRecord | undefined, incoming: JsonRec
   const sources = [...(Array.isArray(current.events) ? current.events : []), ...(Array.isArray(incoming.events) ? incoming.events : [])]
     .map(value => recordOf(value, 'sleep event'));
   const events = (mergeRecordArrayById(current.events, incoming.events, ['at']) as JsonRecord[]).map(event => {
+    const same = sources.filter(source => source.id === event.id && source.at === event.at && source.kind === event.kind);
+    const receipt = same.map(source => source.greeting).filter((value): value is JsonValue => value !== undefined)
+      .sort((a, b) => numberAt(recordOf(a, 'sleep greeting').deliveredAt) - numberAt(recordOf(b, 'sleep greeting').deliveredAt))[0];
+    const attemptId = event.greetingOpportunityId ?? same.find(source => source.greetingOpportunityId !== undefined)?.greetingOpportunityId;
+    event = { ...event, ...(receipt !== undefined ? { greeting: receipt } : {}),
+      ...(attemptId !== undefined ? { greetingOpportunityId: attemptId } : {}) };
     // An older projection may omit homepage refs; it cannot refund an already saved change.
     const origin = sources.find(source => source.id === event.id && source.at === event.at
       && source.kind === 'schedule' && event.kind === source.kind && source.sessionId === undefined && event.sessionId === undefined

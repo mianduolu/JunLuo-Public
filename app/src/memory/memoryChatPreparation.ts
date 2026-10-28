@@ -40,17 +40,22 @@ function failureReason(error: unknown) {
 function cancelled() { return Object.assign(new Error('memory-preparation-cancelled'), { name: 'AbortError' }); }
 
 function collectWork() {
-  const phases = new Map<MemoryRecallWorkPhase, { elapsedMs: number; count: number; active: Set<{ startedAt: number }> }>();
+  const phases = new Map<MemoryRecallWorkPhase, { elapsedMs: number; count: number; active: Set<{ startedAt: number }>; httpStatus?: number }>();
   let finished = false;
   const reporter: MemoryRecallWorkReporter = {
     start(phase) {
       if (finished || !MEMORY_RECALL_WORK_PHASES.includes(phase)) return () => {};
-      const state = phases.get(phase) ?? { elapsedMs: 0, count: 0, active: new Set<{ startedAt: number }>() };
+      const state = phases.get(phase) ?? { elapsedMs: 0, count: 0, active: new Set<{ startedAt: number }>(), httpStatus: undefined as number | undefined };
       phases.set(phase, state);
       const operation = { startedAt: Date.now() };
       state.count++; state.active.add(operation);
-      return () => {
-        if (!finished && state.active.delete(operation)) state.elapsedMs += Math.max(0, Date.now() - operation.startedAt);
+      return (httpStatus) => {
+        if (!finished && state.active.delete(operation)) {
+          state.elapsedMs += Math.max(0, Date.now() - operation.startedAt);
+          if (phase === 'embedding_http' && Number.isInteger(httpStatus) && httpStatus! >= 100 && httpStatus! <= 599) {
+            state.httpStatus = httpStatus;
+          }
+        }
       };
     },
   };
@@ -61,6 +66,7 @@ function collectWork() {
     return Object.fromEntries([...phases].map(([phase, state]) => [phase, {
       elapsedMs: state.elapsedMs + [...state.active].reduce((total, item) => total + Math.max(0, now - item.startedAt), 0),
       count: state.count, active: state.active.size,
+      ...(state.httpStatus !== undefined ? { httpStatus: state.httpStatus } : {}),
     }])) as MemoryRecallStageDiagnostic['work'];
   } };
 }

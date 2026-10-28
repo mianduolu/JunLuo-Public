@@ -23,6 +23,7 @@ type EmotionInput = {
   id: BaiyunEmotionId;
   strength: 'soft' | 'clear' | 'strong';
   target: BaiyunEmotionTarget;
+  reason?: string | null;
 };
 
 type ExistingInternalUpdates = {
@@ -102,6 +103,7 @@ export function applyJunluoAffectBasket(input: {
     operationId: `${op.operationId}:emotion:${index}`,
     sourceId: input.generationKey,
     target: item.target,
+    ...(item.reason === null || typeof item.reason === 'string' ? { reason: item.reason } : {}),
   });
   const lifeStateId = input.sleeping
     ? 'asleep'

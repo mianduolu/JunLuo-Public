@@ -8,7 +8,7 @@ import {
   recordBaiyunContinuityEvidence,
   type CreateBaiyunContinuityEventInput,
 } from './continuityLedger';
-import type { BaiyunContinuityEvidenceKind } from './continuityEvent';
+import { isOrdinaryReminderCareSource, type BaiyunContinuityEvidenceKind } from './continuityEvent';
 import type { SystemStatusBatterySnapshot } from '../systemStatusAmbientContext';
 
 export function buildBaiyunLowBatteryCareSourceId(input: {
@@ -29,6 +29,7 @@ export async function recordBaiyunCareDelivery(input: {
   uiReceiptId?: string;
   links?: CreateBaiyunContinuityEventInput['links'];
 }) {
+  if (isOrdinaryReminderCareSource(input.sourceId)) return undefined;
   if (!input.messageIds?.length && !input.uiReceiptId) return undefined;
   const occurredAt = input.occurredAt ?? Date.now();
   let event = await createBaiyunContinuityEvent({

@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import { createNaturalEarlyWakeOwner, completeNaturalEarlyWake, type NaturalEarlyWakeOwner } from '../life/sleepPlanRuntime';
 import { getProactiveDeviceControl, isProactiveControlWait, withSharedContactLedger } from './proactiveDeviceControl';
 import { beginProactiveBudgetRequest, getProactiveBudgetRetryAt, releaseUnstartedProactiveBudgetRequest, isAiCostDeferred } from '../ai/aiCallBudget';
 import { isChatReplyInFlight, runScheduledAiCall } from '../ai/aiRuntimeScheduler';
@@ -7,6 +8,7 @@ import { buildNearStatusLifeMaterialSnapshot, isFocusSummaryLifeMaterialId, load
 import { listBaiyunContinuityEvents, listBaiyunContinuityLinks, listChatCareMatters } from '../ai/behavior/continuityLedger';
 import { buildChatCareContext, formatCareLocalTime, toChatCareItem } from '../ai/behavior/chatCareUpdates';
 import { isHeartCareMatter } from '../ai/behavior/heartCareMatter';
+import { isOrdinaryReminderCareEvent } from '../ai/behavior/continuityEvent';
 import { buildProactiveBadEnvelopeSnapshot, saveBaiyunLatestBadEnvelopeSnapshot } from '../ai/behavior/actionChatBadEnvelopeCache';
 import { formatChatAfterglowMessageTime } from '../chat/chatAfterglowProbe';
 import { loadJunluoAffectState, loadJunluoDesireState } from '../life/junluoInnerStateStore';
@@ -19,6 +21,7 @@ import { appendMessagesToChatSession, loadChatStateFast, loadChatSessionMessage,
 import { emitChatMessagesAppended } from '../chat/chatMessageEvents';
 import { selectNearStatusConversation } from '../ai/assistantNearStatus';
 import { loadContactWaitingMessages, selectContactWaiting, ORDINARY_CONTACT_ID_PREFIX } from './contactWaiting';
+import { loadBaiyunExpiredShareAwareness } from '../ai/behavior/actionShareResponseStore';
 import { fingerprintPromptText } from '../ai/promptCacheMetrics';
 import { isSiliconQwenChatConnection, freezeQwenChatSource, readQwenChatSource, qwenChatMessageRevision, canUseQwenImportantRawChat,
   QwenChatSourceInvalid, isQwenChatSourceDeferred } from '../ai/qwenChatLayout';
@@ -64,6 +67,12 @@ import { buildPhoneEmergencySnapshot, decidePhoneEmergencyContact, formatPhoneEm
 export type PriorityBodyContact = { id: string; version: string; expiresAt: number; facts: string; kind: 'heart' | 'period' };
 const version = (message: SubjectiveMessage) => fingerprintPromptText(JSON.stringify([message.role, message.content, message.createdAt]));
 let running: Promise<number> | undefined;
+type UnifiedContactRunOwner = { done: Promise<number>; publicDone?: Promise<number>; schedulerHeld: boolean; naturalOwner?: NaturalEarlyWakeOwner };
+let completingRun: UnifiedContactRunOwner | undefined;
+/** A snapshot of the current run, not a waiter that follows later owners. */
+export function captureUnifiedContactRun() {
+  return completingRun;
+}
 let activeContactAbort: AbortController | undefined;
 let contactHostPaused = false;
 let contactHostGeneration = 0;
@@ -118,8 +127,15 @@ async function priorityContact(state: Awaited<ReturnType<typeof readUnifiedConta
 }
 
 async function contactCareEntries(messages: readonly SubjectiveMessage[], now: number, ordinary: boolean) {
-  const page = await listBaiyunContinuityEvents({ kinds: ['care_process'], statuses: ['open', 'waiting'], limit: 200, readOnly: true });
-  const events = [...new Map([...page.filter(event => !isHeartCareMatter(event)),
+  const page: Awaited<ReturnType<typeof listBaiyunContinuityEvents>> = [];
+  for (let offset = 0; ; offset += 200) {
+    const sourcePage = await listBaiyunContinuityEvents({
+      kinds: ['care_process'], statuses: ['open', 'waiting'], limit: 200, offset, readOnly: true,
+    });
+    page.push(...sourcePage.filter(event => !isOrdinaryReminderCareEvent(event)));
+    if (page.length >= 200 || sourcePage.length < 200) break;
+  }
+  const events = [...new Map([...page.slice(0, 200).filter(event => !isHeartCareMatter(event)),
     ...await listChatCareMatters()].map(event => [event.id, event])).values()];
   const ids = new Set(messages.map(message => message.id));
   const linked = new Set<string>();
@@ -174,6 +190,10 @@ async function actualContactState() {
 async function dispatch(input: {
   apiKey: string; connection: AiConnection; profile: AiProfile; backupRestoreLeaseHeld?: boolean;
   schedulerHeld?: boolean;
+  sleepOnly?: boolean;
+  scheduledWakeNight?: string;
+  freshEarlyWake?: import('../life/sleepPlanRuntime').FreshEarlyWakeAdmission;
+  naturalEarlyWakeOwner?: NaturalEarlyWakeOwner;
   priority?: PriorityBodyContact;
 }) {
   if (Platform.OS !== 'android' && Platform.OS !== 'windows') return 0;
@@ -200,6 +220,12 @@ async function dispatch(input: {
   }
   const state = shared ? withSharedContactLedger(localState, shared) : localState;
   const current = state.current?.status !== 'finished' ? state.current : null;
+  if (phoneLocal && current?.sleepGreeting) {
+    const sleep = await import('../life/sleepPlanRuntime');
+    if (!input.sleepOnly || input.schedulerHeld) return 0;
+    return await sleep.runSleepPlanTick({ scheduledWakeNight: input.scheduledWakeNight,
+      freshEarlyWake: input.freshEarlyWake, naturalEarlyWakeOwner: input.naturalEarlyWakeOwner, contactDispatchOwned: true }) ? 1 : 0;
+  }
   if (current && !phoneLocal) {
     const round = shared!.current;
     if (!round || round.opportunityId !== current.id || round.ownerDeviceId !== control!.deviceId
@@ -263,6 +289,19 @@ async function dispatch(input: {
   const decision = contactOpportunityDecision({ now, state, ...actual, chatBusy: isChatReplyInFlight(),
     motives, highest: selected.length ? values[selected[0]] : 0,
     importantExpiresAt: important?.expiresAt, phoneEmergencyDue: phoneDue });
+  const sleep = phoneLocal && !important && !phoneContact && (!current
+    || current.status === 'ready' && !current.requests && !current.messages.length && !current.important && !current.phoneEmergency)
+    ? await import('../life/sleepPlanRuntime') : undefined;
+  const sleepBoundary = await sleep?.readSleepGreetingBoundary(now);
+  const sleepDue = sleepBoundary && (sleepBoundary.phase !== 'wake' || input.scheduledWakeNight === sleepBoundary.nightKey)
+    && sleepBoundary.dueAt <= now && now < sleepBoundary.deadlineAt;
+  if (sleepDue && !input.sleepOnly || input.sleepOnly && !sleepDue) return 0;
+  if (sleepDue && !current && !decision.allowed) return await sleep!.runSleepPlanTick({
+    contactDispatchOwned: true,
+    scheduledWakeNight: input.scheduledWakeNight,
+    freshEarlyWake: input.freshEarlyWake,
+    naturalEarlyWakeOwner: input.naturalEarlyWakeOwner,
+  }) ? 1 : 0;
   if (!current && !decision.allowed) {
     console.info('[unified-contact-check]', { stage: 'opportunity_not_created', reason: decision.reason,
       nextAt: decision.nextAt, enabled: actual.enabled, asleep: actual.asleep, occupied: actual.occupied, used: state.used });
@@ -398,6 +437,15 @@ async function dispatch(input: {
     requests: 0, requestStartedAt: 0, retryStarted: false, failedAt: null, retryAt: null,
     status: 'ready', messages: [], savedMessageIds: [], endedAt: null,
   };
+  if (sleepDue) {
+    const material = [buildContactMotivePaper(candidate.motives), ...entries.map(entry => entry.text)].filter(Boolean).join('\n\n');
+    return await sleep!.runSleepPlanTick({ ordinary: { candidate, material },
+      contactDispatchOwned: true,
+      scheduledWakeNight: input.scheduledWakeNight,
+      freshEarlyWake: input.freshEarlyWake,
+      naturalEarlyWakeOwner: input.naturalEarlyWakeOwner,
+    }) ? 1 : 0;
+  }
   // No model/slot/motive consumption occurs on a lost reservation.
   if (!hostCurrent()) return 0;
   if (!phoneLocal && !current) {
@@ -531,12 +579,14 @@ async function dispatch(input: {
       const waiting = opportunity.materialVersion === 2 && !opportunity.important && !opportunity.phoneEmergency
         ? await loadContactWaitingMessages(sessionId).then(rows => selectContactWaiting(sessionId, rows, Date.now()))
           .catch(() => undefined) : undefined;
+      const expiredAwareness = opportunity.materialVersion === 2 && !opportunity.important && !opportunity.phoneEmergency
+        ? await loadBaiyunExpiredShareAwareness(Date.now()).catch(() => undefined) : undefined;
       const baseFacts = () => buildUnifiedContactFacts({ now: Date.now(), lastYouAt: latestYou?.createdAt,
         messages, affect, desires, motives: opportunity.motives,
         entries: entries.filter(entry => opportunity.sources.some(source => source.id === entry.id && source.version === entry.version
           && source.kind === (entry.kind ?? (entry.care ? 'care' : 'life')))),
         bodyFacts: important?.facts, handoff, ordinary: opportunity.materialVersion === 2,
-        contactWaiting: waiting,
+        contactWaiting: waiting, expiredShareInstruction: expiredAwareness?.expiredShareInstruction,
         separateChat: !!opportunity.qwenChatSource });
       const cameraObservationContext = await loadRecentCameraObservationMaterial({
         sessionId,
@@ -909,11 +959,39 @@ export async function prepareUnifiedContactWaitingAffect(supplied?: Parameters<t
 
 export function runUnifiedContact(input: Parameters<typeof dispatch>[0]): Promise<number> {
   if (contactHostPaused) return Promise.resolve(0);
+  if (input.freshEarlyWake && (completingRun || input.schedulerHeld)) return Promise.resolve(0);
   const hostGeneration = contactHostGeneration;
   const epoch = captureBackupRestoreDataEpoch();
-  if (!running) running = (async () => {
+  if (!running) {
+  const naturalOwner = input.naturalEarlyWakeOwner ?? (!input.schedulerHeld ? createNaturalEarlyWakeOwner() : undefined);
+  const finishNatural = naturalOwner && !input.naturalEarlyWakeOwner;
+  input = { ...input, naturalEarlyWakeOwner: naturalOwner };
+  const owner: UnifiedContactRunOwner = { done: undefined!, schedulerHeld: !!input.schedulerHeld, naturalOwner };
+  running = (async () => {
     if (Platform.OS === 'android') await import('./proactiveDeviceControlAndroid')
       .then(module => module.ensureAndroidProactiveDeviceControl()).catch(() => undefined);
+    if (Platform.OS === 'android') {
+      const sleep = await import('../life/sleepPlanRuntime');
+      if (input.freshEarlyWake && !await sleep.isFreshEarlyWakeCurrent(input.freshEarlyWake)) return 0;
+      const sleepState = await readUnifiedContactState();
+      const current = sleepState.current;
+      const eligible = !current || current.status === 'finished' || current.status === 'ready'
+        && !current.requests && !current.messages.length && !current.important && !current.phoneEmergency;
+      const boundary = eligible ? await sleep.readSleepGreetingBoundary() : null;
+      let sleepDue = !!current?.sleepGreeting && current.status !== 'finished'
+        || boundary && (boundary.phase !== 'wake' || input.scheduledWakeNight === boundary.nightKey)
+          && boundary.dueAt <= Date.now() && Date.now() < boundary.deadlineAt;
+      if (sleepDue && !current?.sleepGreeting) {
+        const priority = input.priority ?? await priorityContact(sleepState, Date.now());
+        const emergency = priority ? null : await readEmergencyContact(sleepState.phoneEmergencyCare);
+        if (priority || emergency && decidePhoneEmergencyContact(emergency, sleepState.phoneEmergencyCare ?? {}, Date.now()).due) sleepDue = false;
+      }
+      if (sleepDue) {
+        // C/D owns its original budget/scheduler. A held urgent-life lane leaves the existing native task to retry.
+        if (input.schedulerHeld) return 0;
+        return dispatch({ ...input, sleepOnly: true });
+      }
+    }
     if (!input.schedulerHeld) await prepareUnifiedContactWaitingAffect(input).catch(() => undefined);
     const begin = () => contactHostPaused || hostGeneration !== contactHostGeneration ? Promise.resolve(0) : dispatch(input);
     return input.schedulerHeld ? begin()
@@ -931,12 +1009,21 @@ export function runUnifiedContact(input: Parameters<typeof dispatch>[0]): Promis
     })
     .finally(async () => {
     running = undefined;
-    await import('../life/sleepPlanRuntime').then(module => module.reconcileSleepPlanLocally()).catch(() => undefined);
+    try { await import('../life/sleepPlanRuntime').then(module => module.reconcileSleepPlanLocally(
+      Date.now(), epoch, true, owner, naturalOwner)).catch(() => undefined); }
+    finally { if (completingRun === owner) completingRun = undefined; }
   });
-  return running;
+  owner.done = running;
+  completingRun = owner;
+  owner.publicDone = finishNatural ? running.then(async value => value + (await completeNaturalEarlyWake(naturalOwner)).inserted,
+    async error => { await completeNaturalEarlyWake(naturalOwner); throw error; }) : running;
+  return owner.publicDone;
+  }
+  return completingRun?.done === running ? completingRun.publicDone ?? running : running;
 }
 
-export async function checkUnifiedContact(): Promise<number> {
+export async function checkUnifiedContact(options: { scheduledWakeNight?: string;
+  freshEarlyWake?: import('../life/sleepPlanRuntime').FreshEarlyWakeAdmission; naturalEarlyWakeOwner?: NaturalEarlyWakeOwner } = {}): Promise<number> {
   if (Platform.OS !== 'android' && Platform.OS !== 'windows') return 0;
   if (contactHostPaused) return 0;
   const hostGeneration = contactHostGeneration;
@@ -945,7 +1032,7 @@ export async function checkUnifiedContact(): Promise<number> {
   const config = resolveLifeCreativeConfig(snapshot);
   if (!config.connection || !config.apiKey.trim()) return 0;
   if (contactHostPaused || hostGeneration !== contactHostGeneration) return 0;
-  return runUnifiedContact({ apiKey: config.apiKey, connection: config.connection, profile: snapshot.profile });
+  return runUnifiedContact({ apiKey: config.apiKey, connection: config.connection, profile: snapshot.profile, ...options });
 }
 
 /** Read by the existing single native sleep/contact task registration. No timer here. */
@@ -962,7 +1049,17 @@ export async function getNextUnifiedContactAt(now = Date.now()): Promise<number 
   const op = state.current;
   const budgetAt = await getProactiveBudgetRetryAt(config.connection, now,
     op?.status === 'waiting_retry' || op?.reason === 'proactive-budget-deferred' && op.requests > 0 ? 1 : 2);
+  const sleep = Platform.OS === 'android' ? await import('../life/sleepPlanRuntime') : undefined;
+  if (op?.sleepGreeting && op.status !== 'finished') {
+    const day = await import('../ai/assistantLifeTimeline').then(module => module.loadAssistantLifeDay(op.sleepGreeting!.nightKey));
+    const retryAt = op.sleepGreeting.phase === 'prepare' ? day?.nightSleepPlan?.prepare?.retryAt : undefined;
+    return Math.min(op.expiresAt, retryAt ?? op.saveRetryAt ?? op.requestStartedAt + 25_000);
+  }
+  const proposedSleep = (!op || op.status === 'finished' || op.status === 'ready' && !op.requests && !op.messages.length
+    && !op.important && !op.phoneEmergency) ? await sleep?.readSleepGreetingBoundary(now) : null;
+  const sleepBoundary = proposedSleep?.phase === 'wake' ? null : proposedSleep;
   if (op && op.status !== 'finished') {
+    if (sleepBoundary) return Math.min(op.expiresAt, Math.max(sleepBoundary.dueAt, budgetAt ?? 0, checkAfterAt));
     if (op.status === 'handoff') return null;
     if (now >= op.expiresAt) return op.expiresAt;
     if (op.status === 'ready' && op.reason === 'proactive-budget-deferred') {
@@ -985,7 +1082,7 @@ export async function getNextUnifiedContactAt(now = Date.now()): Promise<number 
   const phoneDecision = emergency ? decidePhoneEmergencyContact(emergency, state.phoneEmergencyCare ?? {}, now) : null;
   const decision = contactOpportunityDecision({ now, state, ...actual, chatBusy: isChatReplyInFlight(),
     motives, highest: motives.length ? values[motives[0]] : 0, importantExpiresAt: important?.expiresAt });
-  if (decision.allowed && important) return Math.min(important.expiresAt, Math.max(budgetAt || 0, checkAfterAt,
+  if (decision.allowed && important) return Math.min(sleepBoundary?.dueAt ?? Infinity, important.expiresAt, Math.max(budgetAt || 0, checkAfterAt,
     important.expiresAt - (important.kind === 'heart' ? 10 * 60_000 : PERIOD_PRIORITY_WINDOW_MS)));
   let phoneAt: number | null = null;
   if (emergency?.latest && actual.enabled && !actual.asleep && !actual.occupied
@@ -1003,6 +1100,8 @@ export async function getNextUnifiedContactAt(now = Date.now()): Promise<number 
   }
   const dueAt = decision.allowed ? Math.max(state.initializedAt, state.lastEndedAt, state.lastOrdinaryReplyAt)
     + contactWaitMs(values[motives[0]])! : decision.nextAt;
-  const targets = [dueAt, phoneAt].filter((at): at is number => at !== undefined && at !== null);
+  const sleepAt = sleepBoundary && !contactIsPaused(actual.pause, now) && !isChatReplyInFlight()
+    && (state.day !== contactLocalDay(now) || state.used < CONTACT_DAY_LIMIT) ? sleepBoundary.dueAt : null;
+  const targets = [dueAt, phoneAt, sleepAt].filter((at): at is number => at !== undefined && at !== null);
   return targets.length ? Math.max(Math.min(...targets), budgetAt || 0, checkAfterAt) : null;
 }

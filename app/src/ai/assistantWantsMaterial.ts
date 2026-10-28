@@ -6,7 +6,7 @@ import { loadHeartFeedbackCandidates, loadHeartFeedbackRound } from '../chat/hea
 import { loadMemory, loadMemorySourcePage, type MemoryEntry } from '../memory/memoryStore';
 import { getBaiyunContinuityEvent, listBaiyunContinuityEvents, listBaiyunContinuityLinks, listChatCareMatters,
   type BaiyunContinuityEventLink } from './behavior/continuityLedger';
-import type { BaiyunContinuityEvent } from './behavior/continuityEvent';
+import { isOrdinaryReminderCareEvent, type BaiyunContinuityEvent } from './behavior/continuityEvent';
 import { buildChatCareContext, formatCareLocalTime, toChatCareItem } from './behavior/chatCareUpdates';
 import { isHeartCareMatter, type CareContextEvent } from './behavior/heartCareMatter';
 import { buildNearStatusLifeMaterialSnapshot, hasConsumedLifeMaterial, lifeMaterialSourceRevision, nearStatusLifeSourcesMatch, type LifeMaterialItem } from './lifeMaterialHub';
@@ -60,7 +60,8 @@ export async function prepareWantsMaterial(input: { state: InnerUpdateState; ses
   const events: CareContextEvent[] = [];
   for (let offset = 0; ; offset += 200) {
     const page = await listBaiyunContinuityEvents({ limit: 200, offset, readOnly: true });
-    events.push(...page.filter(event => included('care', event.id) && !isHeartCareMatter(event)));
+    events.push(...page.filter(event => !isOrdinaryReminderCareEvent(event)
+      && included('care', event.id) && !isHeartCareMatter(event)));
     if (page.length < 200) break;
   }
   for (const event of await listChatCareMatters()) {

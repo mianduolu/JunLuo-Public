@@ -1,9 +1,10 @@
 import { Platform } from 'react-native';
 import type { AiConnection, AiProfile } from './types';
+import { applyConnectionPromptCacheToRequestBody } from './promptCacheRequest';
 import { projectWishPackageTools, parseWishPackageToolCalls } from '../wishPool/wishPackageToolProtocol';
 import { buildPostImageVisionMessages, type PostVisionImage, type VisionContentPart } from './postImageVisionRequest';
 import { buildChatImageVisionPrompt, type ChatImageVisionMaterial } from './chatImageVisionPrompt';
-import { getChatTransportErrorDetails, normalizeChatProviderRequestId, requestObservedChatCompletion } from './chatCompletionTransport';
+import { getChatTransportErrorDetails, normalizeChatProviderRequestId, readChatProviderHost, requestObservedChatCompletion } from './chatCompletionTransport';
 import { buildCompiledSystemPromptResult } from './builtInSystemPrompt';
 import { buildAmbientContext } from './ambientContext';
 import { isReplyOnlyHistoryLabels } from './replyTransportFormatting';
@@ -442,6 +443,7 @@ export type ChatTransportAttemptEvent = {
   causeCode?: string;
   externalAborted?: boolean;
   providerRequestId?: string;
+  providerHost?: string;
   firstContentAt?: number;
   responseCompletedAt?: number;
   finishedAt?: number;
@@ -991,6 +993,7 @@ async function readJsonPayload(
 
 function createChatRequestSignal(externalSignal?: AbortSignal, timeoutMs = CHAT_COMPLETION_TIMEOUT_MS) {
   const controller = new AbortController();
+  const deadline = Date.now() + timeoutMs;
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   const abortFromExternalSignal = () => controller.abort();
 
@@ -1000,8 +1003,31 @@ function createChatRequestSignal(externalSignal?: AbortSignal, timeoutMs = CHAT_
     externalSignal?.addEventListener('abort', abortFromExternalSignal);
   }
 
+  const abortError = () => Object.assign(new Error('Aborted'), { name: 'AbortError' });
+  const throwIfAborted = () => {
+    // Native completion or synchronous parsing can run before an already due JS timer.
+    if (Date.now() >= deadline) controller.abort();
+    if (controller.signal.aborted) throw abortError();
+  };
+  const readUntilAborted = async <T,>(read: () => Promise<T>): Promise<T> => {
+    throwIfAborted();
+    let abort!: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      abort = () => reject(abortError());
+      controller.signal.addEventListener('abort', abort);
+    });
+    try {
+      const value = await Promise.race([read(), cancelled]);
+      throwIfAborted();
+      return value;
+    } finally {
+      controller.signal.removeEventListener('abort', abort);
+    }
+  };
+
   return {
     signal: controller.signal,
+    readUntilAborted,
     clearTimeout: () => {
       clearTimeout(timeoutId);
     },
@@ -1574,6 +1600,7 @@ async function requestChatCompletion(options: ChatOptions): Promise<ChatCompleti
     observeChatDiagnostic(onPromptTokens, estimatedPromptTokens + (includeToolPromptTokens ? requestOverheadTokens : 0),
       'estimate', promptBreakdown, estimatedCacheStats);
   }
+  body = applyConnectionPromptCacheToRequestBody(body, connection.promptCacheMode);
   observeChatDiagnostic(options.onPreparationCheckpoint, 'preflightReadyAt', Date.now());
   const notifyTransport = (event: Partial<ChatTransportAttemptEvent> & Pick<ChatTransportAttemptEvent, 'phase'>) =>
     observeChatDiagnostic(onTransportAttempt, {
@@ -1588,12 +1615,14 @@ async function requestChatCompletion(options: ChatOptions): Promise<ChatCompleti
   const metricContextSource = contextSource && isPromptContextSource(contextSource) ? contextSource : 'chat.main';
   const beginRequestMetric = () => {
     requestMetric ??= beginPromptCacheMetric({
-      connection: { model: connection.model.trim(), baseUrl: connection.baseUrl },
+      connection: { id: connection.id, model: connection.model.trim(), baseUrl: connection.baseUrl },
+      requestKind: transportRequestKind,
       contextProfile, contextSource: options.metricContextSource ?? metricContextSource, stablePrefixText, breakdown: promptBreakdown,
     });
   };
   const beginTransportEvidence = () => {
     beginRequestMetric();
+    try { requestMetric?.observeSerializedRequest?.(body); } catch { /* Optional observation cannot affect transport. */ }
     if (isLocalQwenChatConnection(connection)
       || (contextSource === 'chat.main' && transportRequestKind === 'tool_continuation' && isOfficialQwen27bConnection(connection))
       || (contextSource === 'proactive.ordinary' && isSiliconQwenChatConnection(connection))) {
@@ -1606,6 +1635,7 @@ async function requestChatCompletion(options: ChatOptions): Promise<ChatCompleti
     const requestSignal = createChatRequestSignal(signal);
     try {
       transportStarted = true;
+      transportObservation.providerHost = readChatProviderHost(url);
       transportObservation.startedAt = Date.now();
       transportObservation.offeredToolCount = openAiTools?.length ?? 0;
       transportObservation.toolCapabilitySource = options.toolCapabilitySource;
@@ -1616,39 +1646,44 @@ async function requestChatCompletion(options: ChatOptions): Promise<ChatCompleti
         && typeof XMLHttpRequest !== 'undefined';
       transportObservation.transportKind = nativeProgressAvailable ? 'xhr' : 'fetch';
       notifyTransport({ phase: 'started' });
-      const response = nativeProgressAvailable
-        ? await requestObservedChatCompletion({
-          url, body, headers, signal: requestSignal.signal,
-          onSend: beginTransportEvidence,
-          onProgress: (observation) => {
-            Object.assign(transportObservation, observation);
-            if (transportObservation.providerRequestId === apiKey.trim()) transportObservation.providerRequestId = undefined;
-            notifyTransport({ phase: 'progress' });
-          },
-        })
-        : await (() => {
-          if (!requestSignal.signal.aborted) {
-            beginTransportEvidence();
-          }
-          return fetch(url, { body, headers, method: 'POST', signal: requestSignal.signal });
-        })();
-      // fetch may resolve only after receipt on native platforms: do not call this a headers timestamp.
-      transportObservation.httpStatus = response.status;
-      transportObservation.responseAvailableAt = Date.now();
-      try {
-        const responseHeaders = (response as { headers?: { get: (name: string) => string | null } }).headers;
-        for (const name of ['x-request-id', 'x-dashscope-request-id', 'request-id']) {
-          const id = normalizeChatProviderRequestId(responseHeaders?.get(name));
-          if (id && id !== apiKey.trim()) { transportObservation.providerRequestId = id; break; }
-        }
-      } catch { /* Optional response metadata never changes the request. */ }
-      notifyTransport({ phase: 'progress' });
-      if (capturedRequest) {
+      const response = await requestSignal.readUntilAborted(async () => {
+        const received = nativeProgressAvailable
+          ? await requestObservedChatCompletion({
+            url, body, headers, signal: requestSignal.signal,
+            onSend: beginTransportEvidence,
+            onProgress: (observation) => {
+              Object.assign(transportObservation, observation);
+              if (transportObservation.providerRequestId === apiKey.trim()) transportObservation.providerRequestId = undefined;
+              notifyTransport({ phase: 'progress' });
+            },
+          })
+          : await (() => {
+            if (!requestSignal.signal.aborted) {
+              beginTransportEvidence();
+            }
+            return fetch(url, { body, headers, method: 'POST', signal: requestSignal.signal });
+          })();
+        // A transport which ignores cancellation can settle after the caller has finished.
+        if (requestSignal.signal.aborted) return received;
+        // fetch may resolve only after receipt on native platforms: do not call this a headers timestamp.
+        transportObservation.httpStatus = received.status;
+        transportObservation.responseAvailableAt = Date.now();
         try {
-          capturedTraceId = (response as { headers?: { get: (name: string) => string | null } })
-            .headers?.get('x-siliconcloud-trace-id') ?? undefined;
-        } catch { /* A diagnostic header is optional. */ }
-      }
+          const responseHeaders = (received as { headers?: { get: (name: string) => string | null } }).headers;
+          for (const name of ['x-request-id', 'x-dashscope-request-id', 'request-id']) {
+            const id = normalizeChatProviderRequestId(responseHeaders?.get(name));
+            if (id && id !== apiKey.trim()) { transportObservation.providerRequestId = id; break; }
+          }
+        } catch { /* Optional response metadata never changes the request. */ }
+        notifyTransport({ phase: 'progress' });
+        if (capturedRequest) {
+          try {
+            capturedTraceId = (received as { headers?: { get: (name: string) => string | null } })
+              .headers?.get('x-siliconcloud-trace-id') ?? undefined;
+          } catch { /* A diagnostic header is optional. */ }
+        }
+        return received;
+      });
       return { requestSignal, response };
     } catch (error) {
       Object.assign(transportObservation, getChatTransportErrorDetails(error));
@@ -1662,13 +1697,13 @@ async function requestChatCompletion(options: ChatOptions): Promise<ChatCompleti
     try {
       transportObservation.bodyReadStartedAt = Date.now();
       notifyTransport({ phase: 'progress' });
-      const nextPayload = await readJsonPayload(response, (reason, error) => {
+      const nextPayload = await requestSignal.readUntilAborted(() => readJsonPayload(response, (reason, error) => {
         transportObservation.bodyParseFailure = reason;
         Object.assign(transportObservation, getChatTransportErrorDetails(error));
         if (reason === 'body_read_failed' && requestSignal.signal.aborted) {
           transportObservation.stopCause = signal?.aborted ? 'aborted' : 'timeout';
         }
-      });
+      }));
       if (transportObservation.bodyParseFailure !== 'body_read_failed') {
         transportObservation.responseCompletedAt ??= Date.now();
       }
@@ -1701,6 +1736,10 @@ async function requestChatCompletion(options: ChatOptions): Promise<ChatCompleti
       if (capturedRequest) observeChatDiagnostic(finishProactiveRequestCapture, capturedRequest, {
         outcome: signal?.aborted ? 'aborted' : error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'network_error',
       });
+      Object.assign(transportObservation, getChatTransportErrorDetails(error));
+      if (error instanceof Error && error.name === 'AbortError') {
+        transportObservation.stopCause = signal?.aborted ? 'aborted' : 'timeout';
+      }
       if (transportStarted) notifyTransport({ phase: 'finished', finishedAt: Date.now(), outcome: signal?.aborted ? 'aborted'
         : error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'network_error' });
       if (error instanceof Error && error.name === 'AbortError') {

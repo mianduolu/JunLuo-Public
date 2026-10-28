@@ -11,6 +11,7 @@ import {
   searchMobileLifeResearch,
 } from './lifeResearchMobileSearch';
 import type { ScheduleItem } from '../schedule/scheduleStore';
+import { withRequestBodyDeadline } from '../utils/requestBodyDeadline';
 
 const BACKEND_SETTINGS_KEY = 'junluo.backend.settings';
 
@@ -764,15 +765,20 @@ type LifeResearchPageFetchOptions = {
 async function fetchLifeResearchPageOnPhone(url: string, options?: LifeResearchPageFetchOptions) {
   if (!isPublicHttpUrl(url)) return null;
   try {
-    const response = await fetchWithTimeout(url, {
-      headers: { Accept: 'text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5' },
-    });
-    if (!response.ok) return null;
-    const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
-    if (contentType && !/text\/html|text\/plain|application\/xhtml\+xml|application\/xml|text\/xml/.test(contentType)) {
-      return null;
-    }
-    const { title, excerpt } = extractReadableMobilePage(await response.text());
+    const html = await withRequestBodyDeadline(async signal => {
+      const response = await fetch(url, {
+        headers: { Accept: 'text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5' }, signal,
+      });
+      if (signal.aborted) throw new Error('timeout');
+      if (!response.ok) return null;
+      const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+      if (contentType && !/text\/html|text\/plain|application\/xhtml\+xml|application\/xml|text\/xml/.test(contentType)) {
+        return null;
+      }
+      return response.text();
+    }, LIFE_RESEARCH_REQUEST_TIMEOUT_MS);
+    if (html === null) return null;
+    const { title, excerpt } = extractReadableMobilePage(html);
     if (excerpt.length < 80) return null;
     const parsed = new URL(url);
     const page: LifeResearchPage = {
@@ -936,20 +942,25 @@ export async function searchLifeResearchWithDiagnostics(
   }
 
   const baseUrls = options.baseUrls ?? await loadLifeResearchBaseUrls();
-  const backendFetch = options.backendFetch ?? fetchWithTimeout;
+  const backendFetch = options.backendFetch ?? fetch;
   const backendDiagnostics: LifeResearchSearchDiagnostic[] = [];
   for (const baseUrl of baseUrls) {
     try {
-      const response = await backendFetch(`${baseUrl}/api/life-research/search`, {
-        body: JSON.stringify({ query: trimmedQuery }),
-        headers: { 'Content-Type': 'application/json' },
-        method: 'POST',
-      });
+      const response = await withRequestBodyDeadline(async signal => {
+        const response = await backendFetch(`${baseUrl}/api/life-research/search`, {
+          body: JSON.stringify({ query: trimmedQuery }),
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', signal,
+        });
+        if (signal.aborted) throw new Error('timeout');
+        if (!response.ok) return { ok: false as const, status: response.status };
+        return { ok: true as const, payload: (await response.json()) as Partial<LifeResearchSearchResponse> };
+      }, LIFE_RESEARCH_REQUEST_TIMEOUT_MS);
       if (!response.ok) {
         backendDiagnostics.push(createBackendSearchDiagnostic(baseUrl, `HTTP ${response.status}`));
         continue;
       }
-      const payload = (await response.json()) as Partial<LifeResearchSearchResponse>;
+      const payload = response.payload;
       if (Array.isArray(payload.results)) {
         const payloadDiagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
         const processed = postProcessLifeResearchSearchResults(trimmedQuery, payload.results, [
@@ -1015,13 +1026,18 @@ export async function fetchLifeResearchPage(url: string, options?: LifeResearchP
   const baseUrls = await loadLifeResearchBaseUrls();
   for (const baseUrl of baseUrls) {
     try {
-      const response = await fetchWithTimeout(`${baseUrl}/api/life-research/fetch`, {
-        body: JSON.stringify({ url: trimmedUrl }),
-        headers: { 'Content-Type': 'application/json' },
-        method: 'POST',
-      });
+      const response = await withRequestBodyDeadline(async signal => {
+        const response = await fetch(`${baseUrl}/api/life-research/fetch`, {
+          body: JSON.stringify({ url: trimmedUrl }),
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', signal,
+        });
+        if (signal.aborted) throw new Error('timeout');
+        if (!response.ok) return { ok: false as const };
+        return { ok: true as const, page: (await response.json()) as LifeResearchPage };
+      }, LIFE_RESEARCH_REQUEST_TIMEOUT_MS);
       if (!response.ok) continue;
-      return (await response.json()) as LifeResearchPage;
+      return response.page;
     } catch {
       continue;
     }

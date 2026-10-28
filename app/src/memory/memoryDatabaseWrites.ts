@@ -1,8 +1,8 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
-export const MEMORY_RECALL_WORK_PHASES = ['candidate_read', 'basis_check', 'source_read', 'vector_search', 'database_queue', 'database_read'] as const;
+export const MEMORY_RECALL_WORK_PHASES = ['candidate_read', 'basis_check', 'source_read', 'vector_search', 'embedding_http', 'embedding_parse', 'vector_match', 'vector_match_memory', 'vector_match_current_state', 'vector_match_shiying', 'vector_match_post', 'database_queue', 'database_read'] as const;
 export type MemoryRecallWorkPhase = typeof MEMORY_RECALL_WORK_PHASES[number];
-export type MemoryRecallWorkDiagnostic = { elapsedMs: number; count: number; active: number };
-export type MemoryRecallWorkReporter = { start: (phase: MemoryRecallWorkPhase) => () => void };
+export type MemoryRecallWorkDiagnostic = { elapsedMs: number; count: number; active: number; httpStatus?: number };
+export type MemoryRecallWorkReporter = { start: (phase: MemoryRecallWorkPhase) => (httpStatus?: number) => void };
 
 export type MemoryDatabaseReadContext = { signal?: AbortSignal; reporter?: MemoryRecallWorkReporter };
 const readWithContext = Symbol('memory-database-read-context');

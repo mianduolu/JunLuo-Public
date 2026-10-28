@@ -33,17 +33,22 @@ function preparationNotes(debug: MemoryBundleDebug) {
     route_json_invalid: '判断 JSON 格式错误', route_shape_invalid: '判断字段不符合约定',
     post_database_busy: '附带动态读取遇到数据库繁忙', post_read_failed: '附带动态读取失败',
     focus_database_busy: '专注补充资料读取遇到数据库繁忙', focus_read_failed: '专注补充资料读取失败',
+    shiying_source_unavailable: '拾荧来源不可用', shiying_read_failed: '拾荧资料读取失败',
     deadline_exceeded: '本轮查找时间已用完', background_only: '本轮仅准备背景记忆', route_unavailable: '回想判断未完成',
     route_fallback: '判断未完成，已按当前聊天查找',
   };
   const statuses = { ready: '完成', not_started: '未启动', failed: '失败', timeout: '超时', cancelled: '已取消' };
   const workLabels: Record<MemoryRecallWorkPhase, string> = { candidate_read: '候选读取', basis_check: '依据核对',
-    source_read: '来源读取', vector_search: '向量查找', database_queue: '数据库排队', database_read: '数据库实际读取' };
+    source_read: '来源读取', vector_search: '向量查找', embedding_http: '嵌入HTTP等待（fetch交回前）',
+    embedding_parse: '嵌入响应JSON读取／解析', vector_match: '本地向量匹配（含读索引）',
+      vector_match_memory: '正式记忆匹配', vector_match_current_state: '近况匹配',
+      vector_match_shiying: '拾荧匹配', vector_match_post: '动态匹配',
+    database_queue: '数据库排队', database_read: '数据库实际读取' };
   return ([['回想判断', debug.preparation.route], ['本地查找', debug.preparation.local],
     ['深入查找', debug.preparation.semantic]] as const).flatMap(([label, stage]) => {
       const details = Object.entries(workLabels).flatMap(([phase, title]) => {
         const measurement = stage.work?.[phase as MemoryRecallWorkPhase];
-        return measurement ? [`${title} ${Math.round(measurement.elapsedMs)} 毫秒 / ${measurement.count} 次${measurement.active ? `，结束时仍有 ${measurement.active} 项未完成` : ''}`] : [];
+        return measurement ? [`${title} ${Math.round(measurement.elapsedMs)} 毫秒 / ${measurement.count} 次${measurement.httpStatus !== undefined ? `，最后HTTP ${measurement.httpStatus}` : ''}${measurement.active ? `，结束时仍有 ${measurement.active} 项未完成` : ''}`] : [];
       });
       return [`${label}：${statuses[stage.status]}${stage.reason ? `（${labels[stage.reason] ?? '未记录具体原因'}）` : ''}`,
         ...(details.length ? [`${label}细分（含嵌套等待，不相加）：${details.join('；')}`] : [])];

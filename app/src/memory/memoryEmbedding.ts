@@ -41,6 +41,7 @@ export type EmbeddingRequestOptions = {
   budget: EmbeddingRequestBudget;
   diagnosticParentToken?: number;
   signal?: AbortSignal;
+  reporter?: import('./memoryDatabaseWrites').MemoryRecallWorkReporter;
 };
 
 type EmbeddingRow = {
@@ -262,14 +263,23 @@ async function requestEmbeddingInputs(
       for (let offset = 0; offset < chunks.length; offset += 8) {
         if (signal.aborted) throw Object.assign(new Error('embedding-cancelled'), { name: 'AbortError' });
         const batch = chunks.slice(offset, offset + 8);
-        const response = await fetch(`${settings.baseUrl.trim().replace(/\/+$/, '')}/embeddings`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${apiKey.trim()}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: settings.model.trim(), input: batch.length === 1 ? batch[0] : batch }),
-          signal,
-        });
+        let response: Response;
+        let httpStatus: number | undefined;
+        const finishHttp = options.reporter?.start('embedding_http');
+        try {
+          response = await fetch(`${settings.baseUrl.trim().replace(/\/+$/, '')}/embeddings`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${apiKey.trim()}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: settings.model.trim(), input: batch.length === 1 ? batch[0] : batch }),
+            signal,
+          });
+          httpStatus = response.status;
+        } finally { finishHttp?.(httpStatus); }
         if (!response.ok) throw new Error(`embedding-http-${response.status}`);
-        const payload = await response.json() as { data?: Array<{ index?: number; embedding?: unknown }> };
+        let payload: { data?: Array<{ index?: number; embedding?: unknown }> };
+        const finishParse = options.reporter?.start('embedding_parse');
+        try { payload = await response.json() as typeof payload; }
+        finally { finishParse?.(); }
         if (chunks.length === 1 && Array.isArray(payload.data?.[0]?.embedding)
           && payload.data[0].embedding.length === 0) return [];
         if (!Array.isArray(payload.data) || payload.data.length !== batch.length) {
@@ -323,7 +333,7 @@ const emptyTargetScores = () => ({ memories: new Map<string, number>(), currentS
   shiyingRecords: new Map<string, number>(), postSources: new Map<string, number>(),
   postSourceRanges: new Map<string, PostSourceEmbeddingRange>() });
 
-async function scoreMemoryTargets(database: SQLiteDatabase, groups: number[][][], settings: EmbeddingSettings,
+export async function scoreMemoryTargets(database: SQLiteDatabase, groups: number[][][], settings: EmbeddingSettings,
   options: MemoryTargetSearchOptions, topK: number, stableTies: boolean) {
   const results = groups.map(emptyTargetScores);
   const queryDimension = groups.find(group => group.length)?.[0].length;
@@ -339,6 +349,8 @@ async function scoreMemoryTargets(database: SQLiteDatabase, groups: number[][][]
     });
   };
   if (!options.eligibleMemoryIds || options.eligibleMemoryIds.size) {
+    const finishPart = options.reporter?.start('vector_match_memory');
+    try {
     const rows = await database.getAllAsync<EmbeddingRow & Parameters<typeof memoryFromRow>[0]>(
       `SELECT memories.*, embeddings.memory_id, embeddings.embedding_json, embeddings.model, embeddings.content_hash
          FROM memory_embeddings embeddings JOIN memories ON memories.id = embeddings.memory_id
@@ -381,8 +393,11 @@ async function scoreMemoryTargets(database: SQLiteDatabase, groups: number[][][]
         }
       }
     }
+    } finally { finishPart?.(); }
   }
   if (!options.eligibleCurrentStateIds || options.eligibleCurrentStateIds.size) {
+    const finishPart = options.reporter?.start('vector_match_current_state');
+    try {
     const rows = await database.getAllAsync<EmbeddingRow & CurrentStateIndexSource>(
       `SELECT states.*, embeddings.memory_id, embeddings.embedding_json, embeddings.model, embeddings.content_hash
          FROM memory_embeddings embeddings JOIN memory_current_states states ON states.id = embeddings.memory_id
@@ -406,17 +421,20 @@ async function scoreMemoryTargets(database: SQLiteDatabase, groups: number[][][]
         if (hasUsableEmbeddingRow(row, text, settings)) score('currentStates', row.id, row.embedding_json, text);
       }
     }
+    } finally { finishPart?.(); }
   }
   if (options.eligibleShiyingRecordIds?.size) {
+    const finishPart = options.reporter?.start('vector_match_shiying');
+    try {
     const { loadShiyingMemoryIndexSources } = await import('../shiying/shiyingMemorySource');
     const rows = await database.getAllAsync<EmbeddingRow>(
       "SELECT * FROM memory_embeddings WHERE target_kind = 'shiying_record' AND model = ?", settings.model);
     const eligible = rows.filter(row => options.eligibleShiyingRecordIds!.has(row.memory_id));
-    const sources = await loadShiyingMemoryIndexSources(eligible.map(row => row.memory_id));
+    const sources = await loadShiyingMemoryIndexSources(eligible.map(row => row.memory_id), { signal: options.signal });
     const candidates = eligible.filter(row => { const source = sources.get(row.memory_id);
       return source && source.indexText.trim() && hasUsableShiyingRecordEmbedding(row, source, settings); });
     // Like formal cards, only the last locally reread original can authorize a vector.
-    const current = await loadShiyingMemoryIndexSources(candidates.map(row => row.memory_id));
+    const current = await loadShiyingMemoryIndexSources(candidates.map(row => row.memory_id), { signal: options.signal });
     for (const row of candidates) {
       if (options.signal?.aborted) throw Object.assign(new Error('embedding-cancelled'), { name: 'AbortError' });
       const source = current.get(row.memory_id);
@@ -424,20 +442,23 @@ async function scoreMemoryTargets(database: SQLiteDatabase, groups: number[][][]
         score('shiyingRecords', row.memory_id, row.embedding_json, source.indexText);
       }
     }
+    } finally { finishPart?.(); }
   }
   if (options.eligiblePostSourceIds?.size) {
+    const finishPart = options.reporter?.start('vector_match_post');
+    try {
     const reader = await import('../posts/baiyunPostRecallSource');
     const rows = await database.getAllAsync<EmbeddingRow>(
       "SELECT * FROM memory_embeddings WHERE target_kind = 'post_source' AND model = ?", settings.model);
     const eligible = rows.filter(row => options.eligiblePostSourceIds!.has(row.memory_id));
-    const sources = await reader.loadPostSourceIndexSources(eligible.map(row => row.memory_id));
+    const sources = await reader.loadPostSourceIndexSources(eligible.map(row => row.memory_id), { signal: options.signal });
     const candidates = eligible.flatMap(row => {
       const source = sources.get(row.memory_id);
       if (!source?.indexText.trim() || row.content_hash !== getPostSourceEmbeddingHash(source, settings)) return [];
       const vectors = readEmbeddingChunks(row.embedding_json, source.indexText);
       return vectors.length ? [{ row, source, vectors }] : [];
     });
-    const current = await reader.loadPostSourceIndexSources(candidates.map(item => item.row.memory_id));
+    const current = await reader.loadPostSourceIndexSources(candidates.map(item => item.row.memory_id), { signal: options.signal });
     for (const { row, source, vectors } of candidates) {
       if (options.signal?.aborted) throw Object.assign(new Error('embedding-cancelled'), { name: 'AbortError' });
       const latest = current.get(row.memory_id);
@@ -456,6 +477,7 @@ async function scoreMemoryTargets(database: SQLiteDatabase, groups: number[][][]
         }
       });
     }
+    } finally { finishPart?.(); }
   }
   return { comparableCount, results: results.map(result => ({
     memories: new Map([...result.memories].sort((a, b) => b[1] - a[1] || (stableTies ? a[0].localeCompare(b[0]) : 0)).slice(0, topK)),
@@ -835,6 +857,7 @@ export async function searchSimilarMemoryTargets(query: string, topK = 10, optio
   }
   const embedQuery = () => requestEmbeddingChunks(query, settings, apiKey, {
     budget: options.budget ?? 'interactive', diagnosticParentToken: options.diagnosticParentToken, signal: options.signal,
+    reporter: options.reporter,
   });
   const queryEmbedding = options.throwOnError ? await embedQuery() : await resolveOptionalEmbedding(embedQuery, options.signal);
   if (!queryEmbedding.length) {
@@ -842,7 +865,11 @@ export async function searchSimilarMemoryTargets(query: string, topK = 10, optio
     return emptyTargetScores();
   }
 
-  const { results, comparableCount } = await scoreMemoryTargets(database, [queryEmbedding], settings, options, topK, false);
+  let scored: Awaited<ReturnType<typeof scoreMemoryTargets>>;
+  const finishMatch = options.reporter?.start('vector_match');
+  try { scored = await scoreMemoryTargets(database, [queryEmbedding], settings, options, topK, false); }
+  finally { finishMatch?.(); }
+  const { results, comparableCount } = scored;
   if (!canCommitBackupRestoreDataEpoch(epoch) || !(await isEmbeddingSettingsCurrent(settings))) {
     if (options.throwOnError) throw new Error('embedding-configuration-changed');
     return emptyTargetScores();

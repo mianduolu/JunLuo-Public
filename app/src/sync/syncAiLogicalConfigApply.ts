@@ -200,6 +200,11 @@ async function upsertConnection(value: AiLogicalConnection) {
   } else {
     delete nextValue.modelParameters;
   }
+  if (value.promptCacheMode === 'ephemeral-first-system') {
+    nextValue.promptCacheMode = value.promptCacheMode;
+  } else {
+    delete nextValue.promptCacheMode;
+  }
   await RawAsyncStorage.setItem(
     AI_LOGICAL_CONFIG_CONNECTIONS_KEY,
     JSON.stringify({

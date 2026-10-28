@@ -370,7 +370,7 @@ async function performInnerStateUpdate(input: AssistantInnerStateUpdateInput) {
     await appendAssistantLifeGenerationDiagnostic({
       flow: 'wants', stage: 'request', requestId, attemptOrdinal,
       ...inner.diagnostics, attemptedAt: startedAt, contextSource: source === 'afterglow' ? 'afterglow' : 'state',
-      extraFields: inner.value?.issues,
+      extraFields: inner.value?.issues ?? inner.parseIssues,
       persistenceStatus: inner.status === 'success' ? 'pending' : 'interrupted',
       failureReason: inner.status === 'failure' ? inner.reason as AssistantLifeGenerationFailureReason : undefined,
       generationKey, materialFingerprint: materialKey, model: input.connection.model.trim(),

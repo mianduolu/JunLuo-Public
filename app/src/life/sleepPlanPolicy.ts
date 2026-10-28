@@ -73,6 +73,24 @@ export type SleepPlanEvent = {
   turnId?: string;
   messageIds?: string[];
   toolCallId?: string;
+  greeting?: SleepGreetingReceipt;
+  greetingOpportunityId?: string;
+};
+
+export type SleepGreetingReceipt = {
+  sessionId: string;
+  messageId: string;
+  deliveredAt: number;
+  opportunityId?: string;
+};
+
+export type SleepGreetingBoundary = {
+  nightKey: string;
+  phase: 'prepare' | 'wake' | 'return';
+  /** The original awake episode, not its replaceable end time. */
+  episodeId: string;
+  dueAt: number;
+  deadlineAt: number;
 };
 
 export type PendingChatSleep = {
@@ -88,6 +106,8 @@ export type PendingChatSleep = {
   sourceMessageIds?: string[];
   turnEndedAt?: number;
   dueAt?: number;
+  /** deliveredAt appears only after delivery; absent means the original fallback still owns closure. */
+  greeting?: { deliveredAt?: number; fallbackAt: number; waitingUntil: number };
 };
 
 export type ChatSleepPlanContext = SleepPlanContext & {
@@ -111,6 +131,8 @@ export type SleepOpportunity = {
   deliveredAt?: number;
   toolResult?: SleepScheduleResult;
   toolCall?: { callId: string; input: Record<string, unknown> };
+  sharedContactId?: string;
+  greeting?: SleepGreetingReceipt;
 };
 
 export type SleepScheduleResult = {
@@ -168,12 +190,84 @@ export function normalizeStoredSleepPlan(plan: NightSleepPlan | undefined): Nigh
 
 export function pendingSleepDueAt(plan: NightSleepPlan) {
   const pending = plan.pendingSleep;
+  if (pending?.greeting && pending.kind === 'return' && pending.greeting.deliveredAt === undefined) return pending.greeting.fallbackAt;
+  if (pending?.greeting) return Math.max(pending.dueAt ?? Math.max(pending.roundDeadlineAt, pending.greeting.waitingUntil),
+    pending.kind === 'sleep' ? pending.hardDeadlineAt : -Infinity);
   return pending ? pending.dueAt ?? pending.roundDeadlineAt + CHAT_SLEEP_QUIET_MS : undefined;
+}
+
+export function sleepGreetingBoundary(day: AssistantLifeDay, state: {
+  wakeSource?: string; manualWakeUntil?: number;
+}, now: number): SleepGreetingBoundary | null {
+  const plan = day.nightSleepPlan;
+  if (!plan || plan.actualWakeAt !== undefined) return null;
+  if (plan.actualSleepAt === undefined) {
+    if (plan.prepare || plan.prepareStatus || now >= day.sleepTargetAt) return null;
+    return { nightKey: day.dateKey, phase: 'prepare', episodeId: `${day.dateKey}:prepare`,
+      dueAt: day.sleepTargetAt - SLEEP_PREPARE_LEAD_MS, deadlineAt: day.sleepTargetAt };
+  }
+  const events = [...(plan.events ?? [])].filter(event => event.at <= now).sort((a, b) => a.at - b.at);
+  const lastReturn = events.filter(event => event.kind === 'sleep_return').at(-1)?.at ?? -Infinity;
+  const pokes = events.filter(event => event.kind === 'poke_awake' && event.at >= lastReturn);
+  if (state.wakeSource === 'poke' && state.manualWakeUntil !== undefined && state.manualWakeUntil > now && pokes.length) {
+    // An extension of this awake fragment does not buy another farewell.
+    let start = pokes.length - 1;
+    while (start > 0 && (pokes[start - 1].until ?? pokes[start - 1].at) >= pokes[start].at) start -= 1;
+    const episode = pokes[start];
+    if (pokes.slice(start).some(event => event.greeting || event.greetingOpportunityId)
+      || plan.pendingSleep?.greeting?.deliveredAt !== undefined) return null;
+    return { nightKey: day.dateKey, phase: 'return', episodeId: episode.id,
+      dueAt: Math.min(state.manualWakeUntil - CHAT_SLEEP_QUIET_MS,
+        plan.pendingSleep?.kind === 'return' ? plan.pendingSleep.decidedAt : Infinity),
+      deadlineAt: state.manualWakeUntil };
+  }
+  const wakeAt = sleepWakeAlarmAt(day, now);
+  if (plan.wake || plan.morningAwakeAt === undefined && now < wakeAt) return null;
+  return { nightKey: day.dateKey, phase: 'wake', episodeId: `${day.dateKey}:wake`,
+    dueAt: plan.morningAwakeAt ?? wakeAt, deadlineAt: Number.MAX_SAFE_INTEGER };
+}
+
+export function startDeliveredSleepFarewell(day: AssistantLifeDay, input: {
+  boundary: SleepGreetingBoundary; receipt: SleepGreetingReceipt; now: number;
+}) {
+  const plan = day.nightSleepPlan;
+  if (!plan || input.boundary.phase === 'wake' || plan.actualWakeAt !== undefined) return;
+  if (input.boundary.phase === 'return') {
+    const episode = plan.events?.find(event => event.id === input.boundary.episodeId && event.kind === 'poke_awake');
+    if (!episode || episode.greeting) return;
+    episode.greeting = input.receipt;
+  }
+  const pending = plan.pendingSleep;
+  if (pending && pending.turnId !== input.receipt.messageId) {
+    // A late receipt acknowledges the first farewell; it cannot replace an already accepted real chat turn.
+    if (pending.sessionId === input.receipt.sessionId
+      && pending.kind === (input.boundary.phase === 'return' ? 'return' : 'sleep')) {
+      const replied = pending.greeting?.deliveredAt !== undefined;
+      const waitingUntil = replied ? pending.greeting!.waitingUntil : input.receipt.deliveredAt + CHAT_SLEEP_QUIET_MS;
+      pending.round = 2;
+      pending.greeting = { deliveredAt: replied ? pending.greeting!.deliveredAt : input.receipt.deliveredAt,
+        fallbackAt: pending.hardDeadlineAt, waitingUntil };
+      if (pending.turnEndedAt !== undefined) pending.dueAt = Math.max(waitingUntil,
+        pending.kind === 'sleep' ? day.sleepTargetAt : -Infinity);
+    }
+    return;
+  }
+  if (pending?.greeting?.deliveredAt !== undefined) return;
+  const waitingUntil = input.now + CHAT_SLEEP_QUIET_MS;
+  plan.pendingSleep = {
+    id: `greeting:${input.boundary.episodeId}`, kind: input.boundary.phase === 'return' ? 'return' : 'sleep',
+    decidedAt: input.now, hardDeadlineAt: input.boundary.deadlineAt,
+    round: 1, roundStartedAt: input.now, roundDeadlineAt: input.now + CHAT_SLEEP_ROUND_MS,
+    sessionId: input.receipt.sessionId, turnId: input.receipt.messageId,
+    sourceMessageIds: [input.receipt.messageId], turnEndedAt: input.now,
+    dueAt: Math.max(waitingUntil, input.boundary.phase === 'prepare' ? day.sleepTargetAt : -Infinity),
+    greeting: { deliveredAt: input.receipt.deliveredAt, fallbackAt: input.boundary.deadlineAt, waitingUntil },
+  };
 }
 
 /** The same native sleep alarm first closes a stuck turn, then settles its quiet period. */
 export function pendingSleepTaskAt(plan: NightSleepPlan) {
-  return plan.pendingSleep?.dueAt ?? plan.pendingSleep?.roundDeadlineAt;
+  return plan.pendingSleep?.greeting ? pendingSleepDueAt(plan) : plan.pendingSleep?.dueAt ?? plan.pendingSleep?.roundDeadlineAt;
 }
 
 /** Earliest saved recovery check that also has seven actual sleeping hours in the final hour. */

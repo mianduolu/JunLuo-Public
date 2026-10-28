@@ -1,7 +1,15 @@
-import { registerBaiyunPendingShareExchange } from '../ai/behavior/actionShareResponseStore';
+import {
+  loadBaiyunPendingShareExchanges,
+  registerBaiyunPendingShareExchange,
+  resolveBaiyunPendingShareResponses,
+} from '../ai/behavior/actionShareResponseStore';
 import type { AiConnection } from '../ai/types';
 import { PRIMARY_CHAT_SESSION_ID } from '../chat/primaryChat';
-import { canCommitBackupRestoreDataEpoch, captureBackupRestoreDataEpoch } from '../backup/backupRestoreCoordinator';
+import {
+  canCommitBackupRestoreDataEpoch,
+  captureBackupRestoreDataEpoch,
+  runBackupRestoreDataEpochCommit,
+} from '../backup/backupRestoreCoordinator';
 import { getLetterMemoryParts, type LetterMemoryPart } from './letterMemorySource';
 import { loadLetters, type LetterEntry } from './letterStore';
 
@@ -45,6 +53,32 @@ async function persistLetterContext(letterId: string, options: LetterContextOpti
         responseDriveKeys: part.label === '未来信' ? ['reflection'] : ['reflection', 'social'],
         excerpt: contextBody(part),
       });
+    }
+    if (part.part === 'reply' && part.role === 'you'
+      && letter.kind === 'exchange' && letter.direction === 'ai-to-you') {
+      const original = getLetterMemoryParts(letter).find(item => item.part === 'original' && item.role === 'I');
+      if (!original) continue;
+      const responses = (await loadBaiyunPendingShareExchanges())
+        .filter(record => record.state === 'waiting'
+          && (record.origin === 'letter' || record.origin === 'chat_action')
+          && record.sourceMessageIds.length === 1 && record.sourceMessageIds[0] === original.messageId)
+        .map(record => ({ pendingShareId: record.id, state: 'engaged' as const }));
+      if (!responses.length) continue;
+      await runBackupRestoreDataEpochCommit(dataEpoch, () => resolveBaiyunPendingShareResponses({
+        responses, responseMessageId: part.messageId, sessionId: PRIMARY_CHAT_SESSION_ID,
+        now: part.createdAt,
+        canCommit: async () => {
+          if (!canCommitBackupRestoreDataEpoch(dataEpoch)) return false;
+          const latest = (await loadLetters()).find(item => item.id === letterId);
+          if (!latest || latest.kind !== 'exchange' || latest.direction !== 'ai-to-you') return false;
+          const currentParts = getLetterMemoryParts(latest);
+          return canCommitBackupRestoreDataEpoch(dataEpoch)
+            && currentParts.some(item => item.part === 'original' && item.role === 'I'
+              && item.messageId === original.messageId && item.sourceHash === original.sourceHash)
+            && currentParts.some(item => item.part === 'reply' && item.role === 'you'
+              && item.messageId === part.messageId && item.sourceHash === part.sourceHash);
+        },
+      }));
     }
   }
   if (registrationError) throw registrationError;
