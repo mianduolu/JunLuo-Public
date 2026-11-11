@@ -64,11 +64,28 @@ function emotion(value: unknown): NonNullable<AssistantAffectBasket['emotions']>
 }
 
 export function parseAssistantAffect(text: string): AssistantAffectParseResult {
+  const body = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const issues: string[] = [];
   let root: unknown;
-  try { root = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()); }
-  catch { return { valid: false, affect: null, issues: ['invalid-json'] }; }
+  try { root = JSON.parse(body); }
+  catch {
+    const start = body.indexOf('{');
+    const end = body.lastIndexOf('}');
+    const invalid = { valid: false, affect: null, issues: ['invalid-json'] };
+    if (start < 0 || end <= start) return invalid;
+    const prefix = body.slice(0, start);
+    const suffix = body.slice(end + 1);
+    if (/[\[\]"]/.test(prefix + suffix) || /^\s*[,:]/.test(suffix)) return invalid;
+    // The full brace span must still be one object. Skip JSON strings before removing trailing commas.
+    const candidate = body.slice(start, end + 1).replace(/"(?:\\[\s\S]|[^"\\])*"|,(\s*[}\]])/g,
+      (token, closing: string | undefined) => closing ?? token);
+    if (candidate === body) return invalid;
+    try { root = JSON.parse(candidate); }
+    catch { return invalid; }
+    issues.push('json-format-recovered');
+  }
   if (!object(root) || !Object.hasOwn(root, 'affect')) return { valid: false, affect: null, issues: ['missing-affect'] };
-  const issues = Object.keys(root).filter(key => key !== 'affect').map(() => 'extra-root-field');
+  issues.push(...Object.keys(root).filter(key => key !== 'affect').map(() => 'extra-root-field'));
   if (root.affect === null) return { valid: true, affect: null, issues };
   if (!object(root.affect)) return { valid: false, affect: null, issues: [...issues, 'invalid-affect'] };
   const source = root.affect;

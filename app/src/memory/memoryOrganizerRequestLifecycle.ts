@@ -1,3 +1,5 @@
+import { bailianTextRequestTimeoutMs } from '../ai/bailianTextRequestTimeout';
+
 export const MEMORY_ORGANIZER_BACKGROUND_TIMEOUT_MS = 20_000;
 
 export class MemoryOrganizerRequestTimeoutError extends Error {
@@ -21,9 +23,12 @@ export function isMemoryOrganizerRequestTimeoutError(
 
 export async function runMemoryOrganizerRequestWithDeadline<T>(
   operation: (signal: AbortSignal) => Promise<T>,
-  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  options: { signal?: AbortSignal; timeoutMs?: number; modelBaseUrl?: string } = {},
 ): Promise<T> {
-  const timeoutMs = options.timeoutMs ?? MEMORY_ORGANIZER_BACKGROUND_TIMEOUT_MS;
+  const timeoutMs = bailianTextRequestTimeoutMs(
+    options.modelBaseUrl ?? '',
+    options.timeoutMs ?? MEMORY_ORGANIZER_BACKGROUND_TIMEOUT_MS,
+  );
   const timeoutError = new MemoryOrganizerRequestTimeoutError(timeoutMs);
   const controller = new AbortController();
   let timedOut = false;

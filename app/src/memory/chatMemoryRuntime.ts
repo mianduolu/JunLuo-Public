@@ -845,7 +845,7 @@ export function createChatMemoryController({
         episodeSummaryEnabled: true,
         chatFactualityEnabled: true,
         signal,
-      }), { signal: owner.signal, timeoutMs: 60_000 }) : [];
+      }), { signal: owner.signal, timeoutMs: 60_000, modelBaseUrl: ai.connection!.baseUrl }) : [];
       const modelCompletedAt = Date.now();
       if (!organizationIsCurrent(sourceSessionId, uiRevision) || !canCommitBackupRestoreDataEpoch(dataEpoch)) return { status: 'skipped' as const };
       const reviewCandidates = makeReviewCandidates(candidates, 'digest', {
@@ -1286,7 +1286,7 @@ export function createChatMemoryController({
           episodeSummaryEnabled: true,
           chatFactualityEnabled: true,
           signal,
-        }), { signal: owner.signal, timeoutMs: 60_000 }) : [];
+        }), { signal: owner.signal, timeoutMs: 60_000, modelBaseUrl: ai.connection!.baseUrl }) : [];
         if (!canCommitBackupRestoreDataEpoch(dataEpoch) || !organizationIsCurrent(sessionId, uiRevision)) return;
         const range = {
           messages: materialMessages,

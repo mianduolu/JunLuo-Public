@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import { bailianTextRequestTimeoutMs } from './bailianTextRequestTimeout';
 import type { AiConnection, AiProfile } from './types';
 import { applyConnectionPromptCacheToRequestBody } from './promptCacheRequest';
 import { projectWishPackageTools, parseWishPackageToolCalls } from '../wishPool/wishPackageToolProtocol';
@@ -751,7 +752,7 @@ export async function sendTheaterCompletion({
   ];
   if (estimateApiMessagesTokens(apiMessages) + getReplyTokenReserve(connection) + 512
     > (connection.contextWindowTokens ?? 65536)) throw new TheaterCapacityError('preflight');
-  const requestSignal = createChatRequestSignal(signal, 60000);
+  const requestSignal = createChatRequestSignal(signal, bailianTextRequestTimeoutMs(connection.baseUrl, 60_000));
   let cacheMetric: ReturnType<typeof beginPromptCacheMetric> | undefined;
 
   try {
@@ -842,7 +843,7 @@ export async function generateTheaterStoryState({
   signal,
 }: TheaterStoryStateOptions) {
   const apiMessages = buildTheaterSummaryApiMessages({ connection, messages, names, persona, previousStoryState, anchorBlock });
-  const requestSignal = createChatRequestSignal(signal, 60000);
+  const requestSignal = createChatRequestSignal(signal, bailianTextRequestTimeoutMs(connection.baseUrl, 60_000));
   let cacheMetric: ReturnType<typeof beginPromptCacheMetric> | undefined;
 
   try {
@@ -1632,14 +1633,15 @@ async function requestChatCompletion(options: ChatOptions): Promise<ChatCompleti
     }
   };
   const startFetchCompletion = async () => {
-    const requestSignal = createChatRequestSignal(signal);
+    const timeoutMs = bailianTextRequestTimeoutMs(connection.baseUrl, CHAT_COMPLETION_TIMEOUT_MS);
+    const requestSignal = createChatRequestSignal(signal, timeoutMs);
     try {
       transportStarted = true;
       transportObservation.providerHost = readChatProviderHost(url);
       transportObservation.startedAt = Date.now();
       transportObservation.offeredToolCount = openAiTools?.length ?? 0;
       transportObservation.toolCapabilitySource = options.toolCapabilitySource;
-      transportObservation.timeoutMs = CHAT_COMPLETION_TIMEOUT_MS;
+      transportObservation.timeoutMs = timeoutMs;
       const nativeProgressAvailable = Boolean(onTransportAttempt)
         && (contextSource === undefined || contextSource === 'chat.main' || contextSource === 'chat.quality-retry')
         && typeof navigator !== 'undefined' && navigator.product === 'ReactNative'
